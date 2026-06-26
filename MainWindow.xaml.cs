@@ -3,7 +3,9 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
+using Microsoft.UI;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Mio.Interop;
@@ -36,6 +38,7 @@ public sealed partial class MainWindow : Window
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(Overlay.TitleDragArea);
+        ConfigureSystemCaptionButtons();
 
         RootGrid.Loaded += (_, _) => RootGrid.Focus(FocusState.Programmatic);
         Closed += MainWindow_Closed;
@@ -44,13 +47,6 @@ public sealed partial class MainWindow : Window
         Overlay.SeekRequested += (_, e) => _player.SeekAbsolute(e.Position);
         Overlay.VolumeRequested += (_, e) => _player.SetVolume(e.Volume);
         Overlay.FullscreenRequested += (_, _) => ToggleFullscreen();
-        Overlay.MinimizeRequested += (_, _) => _fullscreenService.Minimize();
-        Overlay.MaximizeRestoreRequested += (_, _) =>
-        {
-            _fullscreenService.ToggleMaximizeRestore();
-            UpdateCompositionSizeFromPanel();
-        };
-        Overlay.CloseRequested += (_, _) => Close();
 
         _player.StateChanged += OnPlayerStateChanged;
         _player.SwapChainChanged += OnSwapChainChanged;
@@ -70,6 +66,27 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) when (ex is MpvException or DllNotFoundException or BadImageFormatException)
         {
             ShowError(ex.Message);
+        }
+    }
+
+    private void ConfigureSystemCaptionButtons()
+    {
+        try
+        {
+            var windowId = Win32Interop.GetWindowIdFromWindow(_hwnd);
+            var titleBar = AppWindow.GetFromWindowId(windowId).TitleBar;
+            titleBar.ButtonBackgroundColor = Colors.Transparent;
+            titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+            titleBar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF);
+            titleBar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF);
+            titleBar.ButtonForegroundColor = Windows.UI.Color.FromArgb(0xEA, 0xF5, 0xF5, 0xF5);
+            titleBar.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(0x99, 0xF5, 0xF5, 0xF5);
+            titleBar.ButtonHoverForegroundColor = Colors.White;
+            titleBar.ButtonPressedForegroundColor = Colors.White;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Mio.WinUI] configure caption buttons failed: {ex.Message}");
         }
     }
 

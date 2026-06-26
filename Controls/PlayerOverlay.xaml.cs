@@ -22,9 +22,6 @@ public sealed partial class PlayerOverlay : UserControl
     public event EventHandler<SeekRequestedEventArgs>? SeekRequested;
     public event EventHandler<VolumeRequestedEventArgs>? VolumeRequested;
     public event EventHandler? FullscreenRequested;
-    public event EventHandler? MinimizeRequested;
-    public event EventHandler? MaximizeRestoreRequested;
-    public event EventHandler? CloseRequested;
 
     public UIElement TitleDragArea => TitleDragSurface;
 
@@ -71,21 +68,6 @@ public sealed partial class PlayerOverlay : UserControl
     private void FullscreenButton_Click(object sender, RoutedEventArgs e)
     {
         FullscreenRequested?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void MinimizeButton_Click(object sender, RoutedEventArgs e)
-    {
-        MinimizeRequested?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void MaximizeRestoreButton_Click(object sender, RoutedEventArgs e)
-    {
-        MaximizeRestoreRequested?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void CloseButton_Click(object sender, RoutedEventArgs e)
-    {
-        CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private void SeekSlider_PointerPressed(object sender, PointerRoutedEventArgs e)

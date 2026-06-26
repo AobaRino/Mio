@@ -31,15 +31,15 @@
                 <TextBlock
                     x:Name="IdleTitle"
                     HorizontalAlignment="Center"
-                    FontSize="20"
-                    FontWeight="SemiBold"
-                    Foreground="#F2FFFFFF"
+                    FontSize="19"
+                    FontWeight="SemiLight"
+                    Foreground="#DCEAF5F5"
                     Text="Drop video here" />
                 <TextBlock
                     x:Name="StatusText"
                     HorizontalAlignment="Center"
                     FontSize="13"
-                    Foreground="#99FFFFFF"
+                    Foreground="#78F5F5F5"
                     Text="No media" />
                 <TextBlock
                     x:Name="ErrorText"
