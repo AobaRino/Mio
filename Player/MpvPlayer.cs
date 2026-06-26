@@ -387,6 +387,33 @@ public sealed class MpvPlayer : IMediaPlayer
             next.Duration = Math.Max(0, duration);
         }
 
+        if (MpvNative.TryGetInt64(_handle, MpvProperty.VideoWidth, out var videoWidth))
+        {
+            next.VideoWidth = videoWidth > 0 && videoWidth <= int.MaxValue ? (int)videoWidth : 0;
+        }
+
+        if (MpvNative.TryGetInt64(_handle, MpvProperty.VideoHeight, out var videoHeight))
+        {
+            next.VideoHeight = videoHeight > 0 && videoHeight <= int.MaxValue ? (int)videoHeight : 0;
+        }
+
+        if (MpvNative.TryGetDouble(_handle, MpvProperty.VideoAspect, out var videoAspect))
+        {
+            next.VideoAspect = videoAspect > 0 && !double.IsInfinity(videoAspect) && !double.IsNaN(videoAspect)
+                ? videoAspect
+                : 0;
+        }
+
+        if (MpvNative.TryGetInt64(_handle, MpvProperty.DisplayWidth, out var displayWidth))
+        {
+            next.DisplayWidth = displayWidth > 0 && displayWidth <= int.MaxValue ? (int)displayWidth : 0;
+        }
+
+        if (MpvNative.TryGetInt64(_handle, MpvProperty.DisplayHeight, out var displayHeight))
+        {
+            next.DisplayHeight = displayHeight > 0 && displayHeight <= int.MaxValue ? (int)displayHeight : 0;
+        }
+
         if (MpvNative.TryGetDouble(_handle, MpvProperty.Volume, out var volume))
         {
             next.Volume = Math.Min(100, Math.Max(0, volume));

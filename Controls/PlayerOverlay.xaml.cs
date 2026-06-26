@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -10,12 +11,25 @@ namespace Mio.Controls;
 
 public sealed partial class PlayerOverlay : UserControl
 {
+    private static readonly Thickness DefaultBottomContentMargin = new(20, 8, 20, 16);
+
+    private readonly DispatcherQueueTimer _progressTimer;
     private bool _suppressUpdates;
     private bool _isSeeking;
+    private Thickness _lastBottomContentMargin = DefaultBottomContentMargin;
+    private DateTimeOffset _lastProgressUpdateTime;
+    private double _lastProgressPosition;
+    private double _lastProgressDuration;
+    private bool _isProgressInterpolating;
 
     public PlayerOverlay()
     {
         InitializeComponent();
+
+        _progressTimer = DispatcherQueue.CreateTimer();
+        _progressTimer.Interval = TimeSpan.FromMilliseconds(33);
+        _progressTimer.Tick += (_, _) => UpdateInterpolatedProgress();
+        Unloaded += (_, _) => _progressTimer.Stop();
     }
 
     public event EventHandler? PlayPauseRequested;
@@ -28,6 +42,29 @@ public sealed partial class PlayerOverlay : UserControl
     public bool IsPointerWithin { get; private set; }
 
     public bool IsDragging => _isSeeking;
+
+    public void SetVideoContentInset(double horizontalInset)
+    {
+        SetVideoContentInsets(horizontalInset, horizontalInset);
+    }
+
+    public void SetVideoContentInsets(double leftInset, double rightInset)
+    {
+        var margin = new Thickness(
+            DefaultBottomContentMargin.Left + Math.Max(0, leftInset),
+            DefaultBottomContentMargin.Top,
+            DefaultBottomContentMargin.Right + Math.Max(0, rightInset),
+            DefaultBottomContentMargin.Bottom);
+
+        if (Math.Abs(margin.Left - _lastBottomContentMargin.Left) < 0.5 &&
+            Math.Abs(margin.Right - _lastBottomContentMargin.Right) < 0.5)
+        {
+            return;
+        }
+
+        BottomContent.Margin = margin;
+        _lastBottomContentMargin = margin;
+    }
 
     public void ApplyState(PlayerState state)
     {
@@ -42,17 +79,23 @@ public sealed partial class PlayerOverlay : UserControl
             SeekSlider.IsEnabled = canSeek;
             SeekSlider.Maximum = canSeek ? Math.Max(1, state.Duration) : 1;
             DurationText.Text = FormatTime(state.Duration);
-            CurrentTimeText.Text = FormatTime(state.Position);
+
+            _lastProgressPosition = canSeek ? Clamp(state.Position, 0, SeekSlider.Maximum) : 0;
+            _lastProgressDuration = canSeek ? state.Duration : 0;
+            _lastProgressUpdateTime = DateTimeOffset.UtcNow;
+            _isProgressInterpolating = canSeek && !state.IsPaused;
+            CurrentTimeText.Text = FormatTime(_lastProgressPosition);
 
             if (!_isSeeking)
             {
-                SeekSlider.Value = canSeek ? Clamp(state.Position, 0, SeekSlider.Maximum) : 0;
+                SeekSlider.Value = _lastProgressPosition;
             }
 
             VolumeSlider.IsEnabled = state.HasMedia;
             VolumeSlider.Value = Clamp(state.Volume, 0, 100);
 
             FullscreenIcon.Glyph = state.IsFullscreen ? "\uE73F" : "\uE740";
+            UpdateProgressTimer();
         }
         finally
         {
@@ -78,6 +121,7 @@ public sealed partial class PlayerOverlay : UserControl
         }
 
         _isSeeking = true;
+        UpdateProgressTimer();
     }
 
     private void SeekSlider_PointerReleased(object sender, PointerRoutedEventArgs e)
@@ -88,6 +132,7 @@ public sealed partial class PlayerOverlay : UserControl
     private void SeekSlider_PointerCanceled(object sender, PointerRoutedEventArgs e)
     {
         _isSeeking = false;
+        UpdateProgressTimer();
     }
 
     private void SeekSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -121,7 +166,44 @@ public sealed partial class PlayerOverlay : UserControl
         }
 
         _isSeeking = false;
+        _lastProgressPosition = SeekSlider.Value;
+        _lastProgressUpdateTime = DateTimeOffset.UtcNow;
+        UpdateProgressTimer();
         SeekRequested?.Invoke(this, new SeekRequestedEventArgs(SeekSlider.Value));
+    }
+
+    private void UpdateInterpolatedProgress()
+    {
+        if (_suppressUpdates || _isSeeking || !_isProgressInterpolating || _lastProgressDuration <= 0)
+        {
+            return;
+        }
+
+        var elapsed = (DateTimeOffset.UtcNow - _lastProgressUpdateTime).TotalSeconds;
+        var position = Clamp(_lastProgressPosition + elapsed, 0, _lastProgressDuration);
+
+        _suppressUpdates = true;
+        try
+        {
+            SeekSlider.Value = position;
+            CurrentTimeText.Text = FormatTime(position);
+        }
+        finally
+        {
+            _suppressUpdates = false;
+        }
+    }
+
+    private void UpdateProgressTimer()
+    {
+        if (_isProgressInterpolating && !_isSeeking)
+        {
+            _progressTimer.Start();
+        }
+        else
+        {
+            _progressTimer.Stop();
+        }
     }
 
     private void OverlayRoot_PointerEntered(object sender, PointerRoutedEventArgs e)

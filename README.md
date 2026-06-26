@@ -43,6 +43,12 @@ dotnet run
 
 启动后将视频文件拖入窗口即可播放。第一版目标功能包括播放/暂停、进度显示、拖动 seek、音量调节、双击全屏、Esc 退出全屏、方向键 seek/调音量、resize/maximize/fullscreen 后同步 D3D11 composition size。
 
+## 播放器 UI
+
+当前 UI 使用沉浸式 XAML overlay 覆盖在 `SwapChainPanel` 上，不参与 mpv / D3D11 播放链路。顶部 overlay 保留系统 caption buttons，底部 overlay 使用渐变背景，控制内容与实际视频可见区域对齐，避免视频有左右黑边时控件贴到窗口边缘。
+
+底部控制区包含独立 seek row 和 controls row：播放按钮、时间、音量与全屏按钮共享统一基准线。进度条和音量条使用轻量 Slider 样式，去掉默认 tooltip，并通过 UI 侧插值让播放进度连续推进；拖动 seek 时会暂停插值，避免状态刷新抢占用户操作。
+
 ## 当前限制
 
 - `display-swapchain` 必须在加载后 2 秒内可用，否则会显示明确错误。

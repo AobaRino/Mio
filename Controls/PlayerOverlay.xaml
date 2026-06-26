@@ -31,10 +31,14 @@
         <SolidColorBrush x:Key="SliderOuterThumbBackground" Color="Transparent" />
         <CornerRadius x:Key="SliderTrackCornerRadius">4</CornerRadius>
         <CornerRadius x:Key="SliderThumbCornerRadius">8</CornerRadius>
+        <x:Double x:Key="SliderTrackThemeHeight">4</x:Double>
+        <x:Double x:Key="SliderPreContentMargin">10</x:Double>
+        <x:Double x:Key="SliderPostContentMargin">10</x:Double>
+        <x:Double x:Key="SliderHorizontalHeight">24</x:Double>
         <x:Double x:Key="SliderInnerThumbWidth">7</x:Double>
         <x:Double x:Key="SliderInnerThumbHeight">7</x:Double>
-        <x:Double x:Key="SliderHorizontalThumbWidth">14</x:Double>
-        <x:Double x:Key="SliderHorizontalThumbHeight">14</x:Double>
+        <x:Double x:Key="SliderHorizontalThumbWidth">7</x:Double>
+        <x:Double x:Key="SliderHorizontalThumbHeight">7</x:Double>
 
         <Style x:Key="MioIconButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="38" />
@@ -185,7 +189,6 @@
             x:Name="BottomOverlay"
             Grid.Row="2"
             MinHeight="92"
-            Padding="20,8,20,16"
             VerticalAlignment="Bottom">
             <Grid.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
@@ -194,121 +197,142 @@
                     <GradientStop Color="#CC000000" Offset="1" />
                 </LinearGradientBrush>
             </Grid.Background>
-            <Grid.RowDefinitions>
-                <RowDefinition Height="24" />
-                <RowDefinition Height="48" />
-            </Grid.RowDefinitions>
-
-            <Slider
-                x:Name="SeekSlider"
-                Grid.Row="0"
-                Height="24"
-                Margin="0,0,0,2"
-                VerticalAlignment="Center"
-                Foreground="{StaticResource MioAccentBrush}"
-                IsEnabled="False"
-                IsThumbToolTipEnabled="False"
-                Maximum="1"
-                Minimum="0"
-                PointerCanceled="SeekSlider_PointerCanceled"
-                PointerPressed="SeekSlider_PointerPressed"
-                PointerReleased="SeekSlider_PointerReleased"
-                ValueChanged="SeekSlider_ValueChanged" />
 
             <Grid
-                x:Name="ControlsRow"
-                Grid.Row="1"
-                VerticalAlignment="Center">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+                x:Name="BottomContent"
+                Margin="20,8,20,16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="24" />
+                    <RowDefinition Height="48" />
+                </Grid.RowDefinitions>
 
-                <Button
-                    x:Name="PlayPauseButton"
-                    Grid.Column="0"
+                <Slider
+                    x:Name="SeekSlider"
+                    Grid.Row="0"
+                    Height="24"
+                    Margin="0,0,0,2"
                     VerticalAlignment="Center"
-                    Click="PlayPauseButton_Click"
-                    Style="{StaticResource MioPlaybackButtonStyle}"
-                    ToolTipService.ToolTip="Play/Pause">
-                    <FontIcon
-                        x:Name="PlayPauseIcon"
-                        FontFamily="Segoe MDL2 Assets"
-                        FontSize="16"
-                        Foreground="{StaticResource MioOverlayIconBrush}"
-                        Glyph="&#xE768;" />
-                </Button>
+                    Foreground="{StaticResource MioAccentBrush}"
+                    IsEnabled="False"
+                    IsThumbToolTipEnabled="False"
+                    Maximum="1"
+                    Minimum="0"
+                    PointerCanceled="SeekSlider_PointerCanceled"
+                    PointerPressed="SeekSlider_PointerPressed"
+                    PointerReleased="SeekSlider_PointerReleased"
+                    ValueChanged="SeekSlider_ValueChanged" />
 
-                <StackPanel
-                    Grid.Column="1"
-                    MinWidth="88"
-                    Margin="12,0,0,0"
-                    VerticalAlignment="Center"
-                    Orientation="Horizontal">
-                    <TextBlock
-                        x:Name="CurrentTimeText"
-                        VerticalAlignment="Center"
-                        FontSize="12"
-                        Foreground="{StaticResource MioOverlayMutedBrush}"
-                        Text="0:00" />
-                    <TextBlock
-                        VerticalAlignment="Center"
-                        FontSize="12"
-                        Foreground="{StaticResource MioOverlayMutedBrush}"
-                        Text=" / " />
-                    <TextBlock
-                        x:Name="DurationText"
-                        VerticalAlignment="Center"
-                        FontSize="12"
-                        Foreground="{StaticResource MioOverlayMutedBrush}"
-                        Text="0:00" />
-                </StackPanel>
+                <Grid
+                    x:Name="ControlsRow"
+                    Grid.Row="1"
+                    Height="44"
+                    VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                <StackPanel
-                    Grid.Column="3"
-                    VerticalAlignment="Center"
-                    Orientation="Horizontal"
-                    Spacing="8">
-                    <FontIcon
-                        Width="16"
-                        Height="16"
+                    <Button
+                        x:Name="PlayPauseButton"
+                        Grid.Column="0"
                         VerticalAlignment="Center"
-                        FontFamily="Segoe MDL2 Assets"
-                        FontSize="14"
-                        Foreground="{StaticResource MioOverlayMutedBrush}"
-                        Glyph="&#xE767;" />
+                        Click="PlayPauseButton_Click"
+                        Style="{StaticResource MioPlaybackButtonStyle}"
+                        ToolTipService.ToolTip="Play/Pause">
+                        <FontIcon
+                            x:Name="PlayPauseIcon"
+                            FontFamily="Segoe MDL2 Assets"
+                            FontSize="16"
+                            Foreground="{StaticResource MioOverlayIconBrush}"
+                            Glyph="&#xE768;" />
+                    </Button>
 
-                    <Slider
-                        x:Name="VolumeSlider"
-                        Width="104"
-                        Height="24"
+                    <StackPanel
+                        Grid.Column="1"
+                        MinWidth="88"
+                        Margin="12,0,0,0"
                         VerticalAlignment="Center"
-                        Foreground="{StaticResource MioAccentBrush}"
-                        IsThumbToolTipEnabled="False"
-                        Maximum="100"
-                        Minimum="0"
-                        StepFrequency="1"
-                        Value="100"
-                        ValueChanged="VolumeSlider_ValueChanged" />
-                </StackPanel>
+                        Orientation="Horizontal">
+                        <TextBlock
+                            x:Name="CurrentTimeText"
+                            VerticalAlignment="Center"
+                            FontSize="12"
+                            Foreground="{StaticResource MioOverlayMutedBrush}"
+                            Text="0:00" />
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            FontSize="12"
+                            Foreground="{StaticResource MioOverlayMutedBrush}"
+                            Text=" / " />
+                        <TextBlock
+                            x:Name="DurationText"
+                            VerticalAlignment="Center"
+                            FontSize="12"
+                            Foreground="{StaticResource MioOverlayMutedBrush}"
+                            Text="0:00" />
+                    </StackPanel>
 
-                <Button
-                    Grid.Column="4"
-                    Margin="12,0,0,0"
-                    VerticalAlignment="Center"
-                    Click="FullscreenButton_Click"
-                    Style="{StaticResource MioIconButtonStyle}"
-                    ToolTipService.ToolTip="Fullscreen">
-                    <FontIcon
-                        x:Name="FullscreenIcon"
-                        FontFamily="Segoe MDL2 Assets"
-                        FontSize="15"
-                        Foreground="{StaticResource MioOverlayIconBrush}"
-                        Glyph="&#xE740;" />
-                </Button>
+                    <Grid
+                        x:Name="RightControls"
+                        Grid.Column="3"
+                        Height="44"
+                        Width="188"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="24" />
+                            <ColumnDefinition Width="110" />
+                            <ColumnDefinition Width="14" />
+                            <ColumnDefinition Width="40" />
+                        </Grid.ColumnDefinitions>
+
+                        <FontIcon
+                            Grid.Column="0"
+                            Width="16"
+                            Height="16"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            FontFamily="Segoe MDL2 Assets"
+                            FontSize="14"
+                            Foreground="{StaticResource MioOverlayMutedBrush}"
+                            Glyph="&#xE767;" />
+
+                        <Slider
+                            x:Name="VolumeSlider"
+                            Grid.Column="1"
+                            Width="110"
+                            Height="24"
+                            MinWidth="0"
+                            MinHeight="24"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Center"
+                            Foreground="{StaticResource MioAccentBrush}"
+                            IsThumbToolTipEnabled="False"
+                            Maximum="100"
+                            Minimum="0"
+                            StepFrequency="1"
+                            Value="100"
+                            ValueChanged="VolumeSlider_ValueChanged" />
+
+                        <Button
+                            Grid.Column="3"
+                            Width="40"
+                            Height="40"
+                            VerticalAlignment="Center"
+                            Click="FullscreenButton_Click"
+                            Style="{StaticResource MioIconButtonStyle}"
+                            ToolTipService.ToolTip="Fullscreen">
+                            <FontIcon
+                                x:Name="FullscreenIcon"
+                                FontFamily="Segoe MDL2 Assets"
+                                FontSize="15"
+                                Foreground="{StaticResource MioOverlayIconBrush}"
+                                Glyph="&#xE740;" />
+                        </Button>
+                    </Grid>
+                </Grid>
             </Grid>
         </Grid>
     </Grid>

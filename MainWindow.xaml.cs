@@ -182,12 +182,14 @@ public sealed partial class MainWindow : Window
     {
         Debug.WriteLine("[Mio.WinUI] VideoPanel loaded");
         UpdateCompositionSizeFromPanel();
+        UpdateOverlayViewportInsets();
     }
 
     private void VideoPanel_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         Debug.WriteLine("[Mio.WinUI] panel size changed");
         UpdateCompositionSizeFromPanel();
+        UpdateOverlayViewportInsets();
     }
 
     private async Task LoadFileAsync(string path)
@@ -198,8 +200,10 @@ public sealed partial class MainWindow : Window
         try
         {
             UpdateCompositionSizeFromPanel();
+            UpdateOverlayViewportInsets();
             await _player.LoadAsync(path);
             UpdateCompositionSizeFromPanel();
+            UpdateOverlayViewportInsets();
         }
         catch (Exception ex) when (ex is MpvException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -214,6 +218,7 @@ public sealed partial class MainWindow : Window
             _lastState = state;
             _lastState.IsFullscreen = _fullscreenService.IsFullscreen;
             Overlay.ApplyState(_lastState);
+            UpdateOverlayViewportInsets();
             UpdateIdleLayer();
 
             if (!_lastState.HasMedia || _lastState.IsPaused)
@@ -249,6 +254,7 @@ public sealed partial class MainWindow : Window
             Debug.WriteLine($"[Mio.WinUI] SetSwapChain success ptr=0x{swapChain.ToInt64():X} HRESULT {ComHelpers.FormatHResult(hr)}");
             _boundSwapChain = swapChain;
             UpdateCompositionSizeFromPanel();
+            UpdateOverlayViewportInsets();
         });
     }
 
@@ -258,6 +264,7 @@ public sealed partial class MainWindow : Window
         Overlay.ApplyState(_lastState);
         ShowOverlay();
         UpdateCompositionSizeFromPanel();
+        UpdateOverlayViewportInsets();
     }
 
     private void ToggleFullscreen()
@@ -289,6 +296,30 @@ public sealed partial class MainWindow : Window
 
         Debug.WriteLine($"[Mio.WinUI] d3d11-composition-size panel dip={VideoPanel.ActualWidth:0.###}x{VideoPanel.ActualHeight:0.###} scale={scale.Value:0.###} pixels={width}x{height}");
         _player.SetCompositionSize(width, height);
+    }
+
+    private void UpdateOverlayViewportInsets()
+    {
+        var panelWidth = VideoPanel.ActualWidth;
+        var panelHeight = VideoPanel.ActualHeight;
+        var videoAspectRatio = _lastState.VideoAspectRatio;
+
+        if (panelWidth <= 0 || panelHeight <= 0 || videoAspectRatio <= 0)
+        {
+            Overlay.SetVideoContentInset(0);
+            return;
+        }
+
+        var panelAspectRatio = panelWidth / panelHeight;
+        var horizontalInset = 0.0;
+
+        if (panelAspectRatio > videoAspectRatio)
+        {
+            var visibleVideoWidth = panelHeight * videoAspectRatio;
+            horizontalInset = (panelWidth - visibleVideoWidth) / 2;
+        }
+
+        Overlay.SetVideoContentInset(horizontalInset);
     }
 
     private void UpdateIdleLayer()

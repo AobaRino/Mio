@@ -16,6 +16,36 @@ public sealed class PlayerState
 
     public double Duration { get; set; }
 
+    public int VideoWidth { get; set; }
+
+    public int VideoHeight { get; set; }
+
+    public int DisplayWidth { get; set; }
+
+    public int DisplayHeight { get; set; }
+
+    public double VideoAspect { get; set; }
+
+    public double VideoAspectRatio
+    {
+        get
+        {
+            if (VideoAspect > 0)
+            {
+                return VideoAspect;
+            }
+
+            if (DisplayWidth > 0 && DisplayHeight > 0)
+            {
+                return (double)DisplayWidth / DisplayHeight;
+            }
+
+            return VideoWidth > 0 && VideoHeight > 0
+                ? (double)VideoWidth / VideoHeight
+                : 0;
+        }
+    }
+
     public double Volume { get; set; } = 100;
 
     public bool IsFullscreen { get; set; }

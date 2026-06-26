@@ -7,6 +7,11 @@ public static class MpvProperty
     public const string Pause = "pause";
     public const string TimePosition = "time-pos";
     public const string Duration = "duration";
+    public const string VideoWidth = "width";
+    public const string VideoHeight = "height";
+    public const string VideoAspect = "video-params/aspect";
+    public const string DisplayWidth = "dwidth";
+    public const string DisplayHeight = "dheight";
     public const string Volume = "volume";
     public const string IdleActive = "idle-active";
     public const string MediaTitle = "media-title";
