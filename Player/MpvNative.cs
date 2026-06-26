@@ -120,18 +120,38 @@ internal static class MpvNative
     public static bool TryGetFlag(IntPtr handle, string name, out bool value)
     {
         value = false;
+        var result = TryGetFlagWithResult(handle, name, out value);
+        return result >= 0;
+    }
+
+    public static bool TryGetDouble(IntPtr handle, string name, out double value)
+    {
+        value = 0;
+        var result = TryGetDoubleWithResult(handle, name, out value);
+        return result >= 0;
+    }
+
+    public static bool TryGetInt64(IntPtr handle, string name, out long value)
+    {
+        value = 0;
+        var result = TryGetInt64WithResult(handle, name, out value);
+        return result >= 0;
+    }
+
+    public static int TryGetFlagWithResult(IntPtr handle, string name, out bool value)
+    {
+        value = false;
         var data = Marshal.AllocHGlobal(4);
         try
         {
             Marshal.WriteInt32(data, 0);
             var result = NativeGetProperty(handle, name, MpvFormat.Flag, data);
-            if (result < 0)
+            if (result >= 0)
             {
-                return false;
+                value = Marshal.ReadInt32(data) != 0;
             }
 
-            value = Marshal.ReadInt32(data) != 0;
-            return true;
+            return result;
         }
         finally
         {
@@ -139,7 +159,7 @@ internal static class MpvNative
         }
     }
 
-    public static bool TryGetDouble(IntPtr handle, string name, out double value)
+    public static int TryGetDoubleWithResult(IntPtr handle, string name, out double value)
     {
         value = 0;
         var data = Marshal.AllocHGlobal(8);
@@ -147,13 +167,12 @@ internal static class MpvNative
         {
             Marshal.WriteInt64(data, 0);
             var result = NativeGetProperty(handle, name, MpvFormat.Double, data);
-            if (result < 0)
+            if (result >= 0)
             {
-                return false;
+                value = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(data));
             }
 
-            value = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(data));
-            return true;
+            return result;
         }
         finally
         {
@@ -161,7 +180,7 @@ internal static class MpvNative
         }
     }
 
-    public static bool TryGetInt64(IntPtr handle, string name, out long value)
+    public static int TryGetInt64WithResult(IntPtr handle, string name, out long value)
     {
         value = 0;
         var data = Marshal.AllocHGlobal(8);
@@ -169,13 +188,12 @@ internal static class MpvNative
         {
             Marshal.WriteInt64(data, 0);
             var result = NativeGetProperty(handle, name, MpvFormat.Int64, data);
-            if (result < 0)
+            if (result >= 0)
             {
-                return false;
+                value = Marshal.ReadInt64(data);
             }
 
-            value = Marshal.ReadInt64(data);
-            return true;
+            return result;
         }
         finally
         {

@@ -32,6 +32,9 @@ public sealed class MpvPlayer : IMediaPlayer
     private IntPtr _lastSwapChain;
     private int _lastCompositionWidth;
     private int _lastCompositionHeight;
+    private bool _loadFileSubmitted;
+    private int _lastSwapChainResult;
+    private long _lastSwapChainRaw;
     private bool _initialized;
     private bool _disposed;
 
@@ -99,12 +102,14 @@ public sealed class MpvPlayer : IMediaPlayer
         lock (_sync)
         {
             Log($"loadfile path={fullPath}");
+            _loadFileSubmitted = false;
             var result = MpvNative.Command(_handle, MpvCommand.LoadFile(fullPath));
             Log($"loadfile result={DescribeResult(result)}");
             MpvNative.ThrowIfError(result, "loadfile");
 
             _currentFile = fullPath;
             _lastSwapChain = IntPtr.Zero;
+            _loadFileSubmitted = result >= 0;
             _state = _state.Clone();
             _state.CurrentFile = fullPath;
             _state.MediaTitle = Path.GetFileName(fullPath);
@@ -126,6 +131,13 @@ public sealed class MpvPlayer : IMediaPlayer
 
     public void SeekRelative(double seconds)
     {
+        var state = State;
+        if (!state.HasMedia || state.Duration <= 0 || state.IsIdleActive)
+        {
+            Log($"seek ignored: hasMedia={state.HasMedia} duration={state.Duration:0.###} idleActive={state.IsIdleActive}");
+            return;
+        }
+
         TryCommand(MpvCommand.Seek(seconds, "relative"), "seek result");
     }
 
@@ -134,6 +146,7 @@ public sealed class MpvPlayer : IMediaPlayer
         var state = State;
         if (!state.HasMedia || state.Duration <= 0 || state.IsIdleActive)
         {
+            Log($"seek ignored: hasMedia={state.HasMedia} duration={state.Duration:0.###} idleActive={state.IsIdleActive}");
             return;
         }
 
@@ -151,6 +164,7 @@ public sealed class MpvPlayer : IMediaPlayer
     {
         if (width <= 0 || height <= 0)
         {
+            Log($"d3d11-composition-size ignored: invalid size {width}x{height}");
             return;
         }
 
@@ -158,6 +172,7 @@ public sealed class MpvPlayer : IMediaPlayer
         {
             if (!_initialized || _handle == IntPtr.Zero)
             {
+                Log("d3d11-composition-size ignored: mpv not initialized");
                 return;
             }
 
@@ -171,6 +186,10 @@ public sealed class MpvPlayer : IMediaPlayer
             var value = string.Create(CultureInfo.InvariantCulture, $"{width}x{height}");
             var result = MpvNative.SetPropertyString(_handle, MpvProperty.D3D11CompositionSize, value);
             Log($"d3d11-composition-size set {value} result={DescribeResult(result)}");
+            if (result < 0)
+            {
+                Log($"d3d11-composition-size failed: {MpvNative.ErrorString(result)} ({result})");
+            }
         }
     }
 
@@ -219,6 +238,8 @@ public sealed class MpvPlayer : IMediaPlayer
     {
         Log("waiting display-swapchain");
         var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        var nextDiagnostic = DateTimeOffset.MinValue;
+        var diagnostics = new DisplaySwapChainDiagnostics();
 
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -230,10 +251,14 @@ public sealed class MpvPlayer : IMediaPlayer
 
             lock (_sync)
             {
-                if (_initialized && _handle != IntPtr.Zero && MpvNative.TryGetInt64(_handle, MpvProperty.DisplaySwapChain, out var value))
+                diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
+                _lastSwapChainResult = diagnostics.SwapChainResult;
+                _lastSwapChainRaw = diagnostics.SwapChainRaw;
+
+                if (diagnostics.SwapChainPointer != IntPtr.Zero)
                 {
-                    swapChain = new IntPtr(value);
-                    if (swapChain != IntPtr.Zero && swapChain != _lastSwapChain)
+                    swapChain = diagnostics.SwapChainPointer;
+                    if (swapChain != _lastSwapChain)
                     {
                         _lastSwapChain = swapChain;
                         _state = _state.Clone();
@@ -247,7 +272,7 @@ public sealed class MpvPlayer : IMediaPlayer
 
             if (swapChain != IntPtr.Zero)
             {
-                Log($"display-swapchain ptr=0x{swapChain.ToInt64():X}");
+                Log($"display-swapchain result={diagnostics.SwapChainResult} raw={diagnostics.SwapChainRaw} ptr=0x{swapChain.ToInt64():X}");
                 if (changed)
                 {
                     StateChanged?.Invoke(snapshot);
@@ -257,12 +282,58 @@ public sealed class MpvPlayer : IMediaPlayer
                 return;
             }
 
+            if (DateTimeOffset.UtcNow >= nextDiagnostic)
+            {
+                Log(diagnostics.ToLogLine());
+                nextDiagnostic = DateTimeOffset.UtcNow.AddMilliseconds(250);
+            }
+
             await Task.Delay(50, cancellationToken).ConfigureAwait(false);
         }
 
-        var message = "display-swapchain not available. Check d3d11-output-mode=composition and D3D11 mpv options.";
+        lock (_sync)
+        {
+            diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
+        }
+
+        var message = diagnostics.ToTimeoutMessage();
         ErrorOccurred?.Invoke(message);
         throw new MpvException(message);
+    }
+
+    private DisplaySwapChainDiagnostics ReadDisplaySwapChainDiagnosticsLocked()
+    {
+        var diagnostics = new DisplaySwapChainDiagnostics
+        {
+            CurrentFile = _currentFile,
+            LoadFileOk = _loadFileSubmitted,
+            CompositionWidth = _lastCompositionWidth,
+            CompositionHeight = _lastCompositionHeight
+        };
+
+        if (!_initialized || _handle == IntPtr.Zero)
+        {
+            diagnostics.SwapChainResult = int.MinValue;
+            return diagnostics;
+        }
+
+        diagnostics.SwapChainResult = MpvNative.TryGetInt64WithResult(_handle, MpvProperty.DisplaySwapChain, out var swapChainRaw);
+        diagnostics.SwapChainRaw = swapChainRaw;
+        diagnostics.SwapChainPointer = swapChainRaw == 0 ? IntPtr.Zero : new IntPtr(swapChainRaw);
+        if (diagnostics.SwapChainResult < 0)
+        {
+            diagnostics.SwapChainError = MpvNative.ErrorString(diagnostics.SwapChainResult);
+        }
+
+        diagnostics.DurationResult = MpvNative.TryGetDoubleWithResult(_handle, MpvProperty.Duration, out var duration);
+        diagnostics.Duration = duration;
+        diagnostics.IdleActiveResult = MpvNative.TryGetFlagWithResult(_handle, MpvProperty.IdleActive, out var idleActive);
+        diagnostics.IdleActive = idleActive;
+        diagnostics.PauseResult = MpvNative.TryGetFlagWithResult(_handle, MpvProperty.Pause, out var pause);
+        diagnostics.Pause = pause;
+        diagnostics.TimePositionResult = MpvNative.TryGetDoubleWithResult(_handle, MpvProperty.TimePosition, out var timePosition);
+        diagnostics.TimePosition = timePosition;
+        return diagnostics;
     }
 
     private async Task PollStateAsync(CancellationToken cancellationToken)
@@ -339,7 +410,7 @@ public sealed class MpvPlayer : IMediaPlayer
     private void SetOptionLocked(string name, string value)
     {
         var result = MpvNative.SetOptionString(_handle, name, value);
-        Log($"option {name}={value} result={DescribeResult(result)}");
+        Log($"option {name}={value} {DescribeResultWithError(result)}");
         MpvNative.ThrowIfError(result, $"set option {name}");
     }
 
@@ -415,8 +486,72 @@ public sealed class MpvPlayer : IMediaPlayer
         return result < 0 ? $"{MpvNative.ErrorString(result)} ({result})" : result.ToString(CultureInfo.InvariantCulture);
     }
 
+    private static string DescribeResultWithError(int result)
+    {
+        return result < 0
+            ? $"result={result} error={MpvNative.ErrorString(result)}"
+            : $"result={result} error=success";
+    }
+
     private static void Log(string message)
     {
         Debug.WriteLine($"[Mio.WinUI] {message}");
+    }
+
+    private sealed class DisplaySwapChainDiagnostics
+    {
+        public int SwapChainResult { get; set; }
+
+        public long SwapChainRaw { get; set; }
+
+        public IntPtr SwapChainPointer { get; set; }
+
+        public string? SwapChainError { get; set; }
+
+        public int DurationResult { get; set; }
+
+        public double Duration { get; set; }
+
+        public int IdleActiveResult { get; set; }
+
+        public bool IdleActive { get; set; }
+
+        public int PauseResult { get; set; }
+
+        public bool Pause { get; set; }
+
+        public int TimePositionResult { get; set; }
+
+        public double TimePosition { get; set; }
+
+        public int CompositionWidth { get; set; }
+
+        public int CompositionHeight { get; set; }
+
+        public string? CurrentFile { get; set; }
+
+        public bool LoadFileOk { get; set; }
+
+        public string ToLogLine()
+        {
+            var error = SwapChainResult < 0 ? $" error={SwapChainError}" : string.Empty;
+            return $"display-swapchain diag result={SwapChainResult}{error} raw={SwapChainRaw} ptr=0x{SwapChainPointer.ToInt64():X} duration={Duration:0.###} durationResult={DurationResult} idleActive={IdleActive} idleResult={IdleActiveResult} pause={Pause} pauseResult={PauseResult} timePos={TimePosition:0.###} timeResult={TimePositionResult} compositionSize={CompositionWidth}x{CompositionHeight} loadfileOk={LoadFileOk} file={CurrentFile ?? "<none>"}";
+        }
+
+        public string ToTimeoutMessage()
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"""
+display-swapchain not available.
+loadfileOk={LoadFileOk}
+duration={Duration:0.###}
+idleActive={IdleActive}
+timePos={TimePosition:0.###}
+lastSwapChainRaw={SwapChainRaw}
+lastSwapChainResult={SwapChainResult}
+compositionSize={CompositionWidth}x{CompositionHeight}
+currentFile={CurrentFile ?? "<none>"}
+Check d3d11-output-mode=composition, d3d11-composition-size, and mpv D3D11 options.
+""");
+        }
     }
 }

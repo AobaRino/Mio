@@ -45,7 +45,11 @@ public sealed partial class MainWindow : Window
         Overlay.VolumeRequested += (_, e) => _player.SetVolume(e.Volume);
         Overlay.FullscreenRequested += (_, _) => ToggleFullscreen();
         Overlay.MinimizeRequested += (_, _) => _fullscreenService.Minimize();
-        Overlay.MaximizeRestoreRequested += (_, _) => _fullscreenService.ToggleMaximizeRestore();
+        Overlay.MaximizeRestoreRequested += (_, _) =>
+        {
+            _fullscreenService.ToggleMaximizeRestore();
+            UpdateCompositionSizeFromPanel();
+        };
         Overlay.CloseRequested += (_, _) => Close();
 
         _player.StateChanged += OnPlayerStateChanged;
@@ -157,6 +161,12 @@ public sealed partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private void VideoPanel_Loaded(object sender, RoutedEventArgs e)
+    {
+        Debug.WriteLine("[Mio.WinUI] VideoPanel loaded");
+        UpdateCompositionSizeFromPanel();
+    }
+
     private void VideoPanel_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         Debug.WriteLine("[Mio.WinUI] panel size changed");
@@ -170,6 +180,7 @@ public sealed partial class MainWindow : Window
 
         try
         {
+            UpdateCompositionSizeFromPanel();
             await _player.LoadAsync(path);
             UpdateCompositionSizeFromPanel();
         }
@@ -208,10 +219,17 @@ public sealed partial class MainWindow : Window
             Debug.WriteLine($"[Mio.WinUI] SetSwapChain result={ComHelpers.FormatHResult(hr)}");
             if (ComHelpers.Failed(hr))
             {
+                if (hr == unchecked((int)0x80004002))
+                {
+                    ShowError("SwapChainPanel native interop failed: ISwapChainPanelNative not available. Check WinUI 3 dxinterop GUID/interface.");
+                    return;
+                }
+
                 ShowError($"SetSwapChain failed: HRESULT {ComHelpers.FormatHResult(hr)}");
                 return;
             }
 
+            Debug.WriteLine($"[Mio.WinUI] SetSwapChain success ptr=0x{swapChain.ToInt64():X} HRESULT {ComHelpers.FormatHResult(hr)}");
             _boundSwapChain = swapChain;
             UpdateCompositionSizeFromPanel();
         });
@@ -232,6 +250,12 @@ public sealed partial class MainWindow : Window
 
     private void UpdateCompositionSizeFromPanel()
     {
+        if (!VideoPanel.IsLoaded)
+        {
+            Debug.WriteLine("[Mio.WinUI] d3d11-composition-size skipped: VideoPanel not loaded");
+            return;
+        }
+
         var scale = VideoPanel.XamlRoot?.RasterizationScale;
         if (scale is null or <= 0)
         {
@@ -242,9 +266,11 @@ public sealed partial class MainWindow : Window
         var height = (int)Math.Round(VideoPanel.ActualHeight * scale.Value);
         if (width <= 0 || height <= 0)
         {
+            Debug.WriteLine($"[Mio.WinUI] d3d11-composition-size skipped: invalid panel size dip={VideoPanel.ActualWidth:0.###}x{VideoPanel.ActualHeight:0.###} scale={scale.Value:0.###} pixels={width}x{height}");
             return;
         }
 
+        Debug.WriteLine($"[Mio.WinUI] d3d11-composition-size panel dip={VideoPanel.ActualWidth:0.###}x{VideoPanel.ActualHeight:0.###} scale={scale.Value:0.###} pixels={width}x{height}");
         _player.SetCompositionSize(width, height);
     }
 
