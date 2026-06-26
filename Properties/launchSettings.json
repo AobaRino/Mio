@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Mio (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Mio (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

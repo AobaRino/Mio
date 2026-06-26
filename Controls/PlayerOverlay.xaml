@@ -1,0 +1,192 @@
+<UserControl
+    x:Class="Mio.Controls.PlayerOverlay"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid
+        x:Name="OverlayRoot"
+        Background="Transparent"
+        PointerEntered="OverlayRoot_PointerEntered"
+        PointerExited="OverlayRoot_PointerExited">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid
+            x:Name="TopOverlay"
+            Height="44"
+            Padding="14,0,6,0"
+            Background="#B0000000">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Grid x:Name="TitleDragSurface" VerticalAlignment="Stretch">
+                <TextBlock
+                    x:Name="TitleText"
+                    VerticalAlignment="Center"
+                    FontSize="13"
+                    Foreground="#F2FFFFFF"
+                    Text="Mio"
+                    TextTrimming="CharacterEllipsis" />
+            </Grid>
+
+            <Button
+                Grid.Column="1"
+                Width="40"
+                Height="36"
+                Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="MinimizeButton_Click"
+                ToolTipService.ToolTip="Minimize">
+                <FontIcon
+                    FontFamily="Segoe MDL2 Assets"
+                    FontSize="10"
+                    Glyph="&#xE921;" />
+            </Button>
+
+            <Button
+                Grid.Column="2"
+                Width="40"
+                Height="36"
+                Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="MaximizeRestoreButton_Click"
+                ToolTipService.ToolTip="Maximize">
+                <FontIcon
+                    x:Name="MaximizeRestoreIcon"
+                    FontFamily="Segoe MDL2 Assets"
+                    FontSize="10"
+                    Glyph="&#xE922;" />
+            </Button>
+
+            <Button
+                Grid.Column="3"
+                Width="44"
+                Height="36"
+                Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="CloseButton_Click"
+                ToolTipService.ToolTip="Close">
+                <FontIcon
+                    FontFamily="Segoe MDL2 Assets"
+                    FontSize="10"
+                    Glyph="&#xE8BB;" />
+            </Button>
+        </Grid>
+
+        <Grid
+            x:Name="BottomOverlay"
+            Grid.Row="2"
+            MinHeight="72"
+            Padding="14,10,14,12"
+            Background="#B0000000">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="56" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="56" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="130" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Button
+                x:Name="PlayPauseButton"
+                Width="42"
+                Height="42"
+                Padding="0"
+                VerticalAlignment="Center"
+                Background="#22000000"
+                BorderBrush="#22FFFFFF"
+                BorderThickness="1"
+                Click="PlayPauseButton_Click"
+                ToolTipService.ToolTip="Play/Pause">
+                <FontIcon
+                    x:Name="PlayPauseIcon"
+                    FontFamily="Segoe MDL2 Assets"
+                    FontSize="16"
+                    Glyph="&#xE768;" />
+            </Button>
+
+            <TextBlock
+                x:Name="CurrentTimeText"
+                Grid.Column="1"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                FontSize="12"
+                Foreground="#D9FFFFFF"
+                Text="0:00" />
+
+            <Slider
+                x:Name="SeekSlider"
+                Grid.Column="2"
+                Margin="12,0"
+                VerticalAlignment="Center"
+                Foreground="{StaticResource MioAccentBrush}"
+                IsEnabled="False"
+                Maximum="1"
+                Minimum="0"
+                PointerCanceled="SeekSlider_PointerCanceled"
+                PointerPressed="SeekSlider_PointerPressed"
+                PointerReleased="SeekSlider_PointerReleased"
+                ValueChanged="SeekSlider_ValueChanged" />
+
+            <TextBlock
+                x:Name="DurationText"
+                Grid.Column="3"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Center"
+                FontSize="12"
+                Foreground="#D9FFFFFF"
+                Text="0:00" />
+
+            <FontIcon
+                Grid.Column="4"
+                Margin="12,0,8,0"
+                VerticalAlignment="Center"
+                FontFamily="Segoe MDL2 Assets"
+                FontSize="14"
+                Foreground="#D9FFFFFF"
+                Glyph="&#xE767;" />
+
+            <Slider
+                x:Name="VolumeSlider"
+                Grid.Column="5"
+                VerticalAlignment="Center"
+                Foreground="{StaticResource MioAccentBrush}"
+                Maximum="100"
+                Minimum="0"
+                StepFrequency="1"
+                Value="100"
+                ValueChanged="VolumeSlider_ValueChanged" />
+
+            <Button
+                Grid.Column="6"
+                Width="42"
+                Height="42"
+                Padding="0"
+                Margin="12,0,0,0"
+                VerticalAlignment="Center"
+                Background="#22000000"
+                BorderBrush="#22FFFFFF"
+                BorderThickness="1"
+                Click="FullscreenButton_Click"
+                ToolTipService.ToolTip="Fullscreen">
+                <FontIcon
+                    x:Name="FullscreenIcon"
+                    FontFamily="Segoe MDL2 Assets"
+                    FontSize="15"
+                    Glyph="&#xE740;" />
+            </Button>
+        </Grid>
+    </Grid>
+</UserControl>
