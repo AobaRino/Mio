@@ -24,5 +24,17 @@ public interface IMediaPlayer : IDisposable
 
     void SetVolume(double volume);
 
+    void SelectAudioTrack(int trackId);
+
+    void SelectSubtitleTrack(int trackId);
+
+    void DisableSubtitles();
+
+    void AutoSelectSubtitles();
+
+    void ToggleSubtitleVisibility();
+
+    void AddSubtitleFile(string path);
+
     void SetCompositionSize(int width, int height);
 }

@@ -8,6 +8,8 @@ public sealed class PlayerState
 
     public bool IsIdleActive { get; set; }
 
+    public bool IsEndOfFile { get; set; }
+
     public string? CurrentFile { get; set; }
 
     public string MediaTitle { get; set; } = "Mio";
@@ -47,6 +49,16 @@ public sealed class PlayerState
     }
 
     public double Volume { get; set; } = 100;
+
+    public IReadOnlyList<TrackInfo> AudioTracks { get; set; } = Array.Empty<TrackInfo>();
+
+    public IReadOnlyList<TrackInfo> SubtitleTracks { get; set; } = Array.Empty<TrackInfo>();
+
+    public int? SelectedAudioTrackId { get; set; }
+
+    public int? SelectedSubtitleTrackId { get; set; }
+
+    public bool SubtitlesVisible { get; set; }
 
     public bool IsFullscreen { get; set; }
 

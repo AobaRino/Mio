@@ -142,11 +142,7 @@
         </Style>
     </UserControl.Resources>
 
-    <Grid
-        x:Name="OverlayRoot"
-        Background="Transparent"
-        PointerEntered="OverlayRoot_PointerEntered"
-        PointerExited="OverlayRoot_PointerExited">
+    <Grid x:Name="OverlayRoot">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -156,7 +152,9 @@
         <Grid
             x:Name="TopOverlay"
             Height="48"
-            Padding="16,0,8,0">
+            Padding="16,0,8,0"
+            PointerEntered="OverlayRoot_PointerEntered"
+            PointerExited="OverlayRoot_PointerExited">
             <Grid.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                     <GradientStop Color="#B8000000" Offset="0" />
@@ -189,7 +187,9 @@
             x:Name="BottomOverlay"
             Grid.Row="2"
             MinHeight="92"
-            VerticalAlignment="Bottom">
+            VerticalAlignment="Bottom"
+            PointerEntered="OverlayRoot_PointerEntered"
+            PointerExited="OverlayRoot_PointerExited">
             <Grid.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                     <GradientStop Color="#00000000" Offset="0" />
@@ -217,9 +217,6 @@
                     IsThumbToolTipEnabled="False"
                     Maximum="1"
                     Minimum="0"
-                    PointerCanceled="SeekSlider_PointerCanceled"
-                    PointerPressed="SeekSlider_PointerPressed"
-                    PointerReleased="SeekSlider_PointerReleased"
                     ValueChanged="SeekSlider_ValueChanged" />
 
                 <Grid
@@ -278,18 +275,48 @@
                         x:Name="RightControls"
                         Grid.Column="3"
                         Height="44"
-                        Width="188"
+                        Width="244"
                         HorizontalAlignment="Right"
                         VerticalAlignment="Center">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="38" />
+                            <ColumnDefinition Width="38" />
                             <ColumnDefinition Width="24" />
-                            <ColumnDefinition Width="110" />
+                            <ColumnDefinition Width="90" />
                             <ColumnDefinition Width="14" />
                             <ColumnDefinition Width="40" />
                         </Grid.ColumnDefinitions>
 
-                        <FontIcon
+                        <Button
+                            x:Name="SubtitleButton"
                             Grid.Column="0"
+                            VerticalAlignment="Center"
+                            Click="SubtitleButton_Click"
+                            Style="{StaticResource MioIconButtonStyle}"
+                            ToolTipService.ToolTip="Subtitles">
+                            <FontIcon
+                                FontFamily="Segoe MDL2 Assets"
+                                FontSize="14"
+                                Foreground="{StaticResource MioOverlayIconBrush}"
+                                Glyph="&#xE8D2;" />
+                        </Button>
+
+                        <Button
+                            x:Name="AudioTrackButton"
+                            Grid.Column="1"
+                            VerticalAlignment="Center"
+                            Click="AudioTrackButton_Click"
+                            Style="{StaticResource MioIconButtonStyle}"
+                            ToolTipService.ToolTip="Audio Tracks">
+                            <FontIcon
+                                FontFamily="Segoe MDL2 Assets"
+                                FontSize="14"
+                                Foreground="{StaticResource MioOverlayIconBrush}"
+                                Glyph="&#xE8D6;" />
+                        </Button>
+
+                        <FontIcon
+                            Grid.Column="2"
                             Width="16"
                             Height="16"
                             HorizontalAlignment="Center"
@@ -301,8 +328,8 @@
 
                         <Slider
                             x:Name="VolumeSlider"
-                            Grid.Column="1"
-                            Width="110"
+                            Grid.Column="3"
+                            Width="90"
                             Height="24"
                             MinWidth="0"
                             MinHeight="24"
@@ -317,7 +344,7 @@
                             ValueChanged="VolumeSlider_ValueChanged" />
 
                         <Button
-                            Grid.Column="3"
+                            Grid.Column="5"
                             Width="40"
                             Height="40"
                             VerticalAlignment="Center"

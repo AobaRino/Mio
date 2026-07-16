@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using Microsoft.UI.Xaml;
 
 namespace Mio;
@@ -17,8 +18,17 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         Debug.WriteLine("[Mio.WinUI] app starting");
-        _window = new MainWindow();
+        var mainWindow = new MainWindow();
+        _window = mainWindow;
         _window.Activate();
+
+        var launchFile = Environment.GetCommandLineArgs()
+            .Skip(1)
+            .FirstOrDefault(File.Exists);
+        if (!string.IsNullOrWhiteSpace(launchFile))
+        {
+            mainWindow.OpenFileWhenReady(launchFile);
+        }
     }
 
     private static void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)

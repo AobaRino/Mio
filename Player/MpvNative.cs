@@ -117,6 +117,17 @@ internal static class MpvNative
         }
     }
 
+    public static bool TryGetString(IntPtr handle, string name, out string? value)
+    {
+        value = GetPropertyString(handle, name);
+        return value is not null;
+    }
+
+    public static bool TrySetPropertyString(IntPtr handle, string name, string value)
+    {
+        return SetPropertyString(handle, name, value) >= 0;
+    }
+
     public static bool TryGetFlag(IntPtr handle, string name, out bool value)
     {
         value = false;

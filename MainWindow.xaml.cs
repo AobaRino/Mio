@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
@@ -13,20 +15,30 @@ using Mio.Player;
 using Mio.Services;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
+using Windows.Storage.Pickers;
 using WinRT.Interop;
 
 namespace Mio;
 
 public sealed partial class MainWindow : Window
 {
+    private const int SwapChainBindMaxAttempts = 20;
+    private static readonly TimeSpan SwapChainBindRetryDelay = TimeSpan.FromMilliseconds(100);
+
     private readonly MpvPlayer _player = new();
     private readonly FullscreenService _fullscreenService;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _overlayHideTimer;
     private readonly IntPtr _hwnd;
 
+    private CancellationTokenSource? _loadCancellation;
+    private CancellationTokenSource? _swapChainBindCancellation;
     private IntPtr _boundSwapChain;
     private PlayerState _lastState = PlayerState.CreateIdle();
+    private long _loadGeneration;
+    private long _swapChainBindGeneration;
+    private int _swapChainRecoveryAttempts;
     private bool _hasVisibleError;
+    private bool _isRecoveringSwapChain;
 
     public MainWindow()
     {
@@ -47,6 +59,11 @@ public sealed partial class MainWindow : Window
         Overlay.SeekRequested += (_, e) => _player.SeekAbsolute(e.Position);
         Overlay.VolumeRequested += (_, e) => _player.SetVolume(e.Volume);
         Overlay.FullscreenRequested += (_, _) => ToggleFullscreen();
+        Overlay.SubtitleTrackRequested += (_, e) => _player.SelectSubtitleTrack(e.TrackId);
+        Overlay.SubtitleOffRequested += (_, _) => _player.DisableSubtitles();
+        Overlay.SubtitleAutoRequested += (_, _) => _player.AutoSelectSubtitles();
+        Overlay.ExternalSubtitleRequested += async (_, _) => await LoadExternalSubtitleAsync();
+        Overlay.AudioTrackRequested += (_, e) => _player.SelectAudioTrack(e.TrackId);
 
         _player.StateChanged += OnPlayerStateChanged;
         _player.SwapChainChanged += OnSwapChainChanged;
@@ -110,6 +127,28 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    public void OpenFileWhenReady(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        if (VideoPanel.IsLoaded)
+        {
+            _ = LoadFileAsync(path);
+            return;
+        }
+
+        RoutedEventHandler? loadedHandler = null;
+        loadedHandler = (_, _) =>
+        {
+            VideoPanel.Loaded -= loadedHandler;
+            _ = LoadFileAsync(path);
+        };
+        VideoPanel.Loaded += loadedHandler;
+    }
+
     private void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
     {
         switch (e.Key)
@@ -146,7 +185,66 @@ public sealed partial class MainWindow : Window
                 ShowOverlay();
                 e.Handled = true;
                 break;
+            case VirtualKey.S:
+                _player.ToggleSubtitleVisibility();
+                ShowOverlay();
+                e.Handled = true;
+                break;
+            case VirtualKey.A:
+                SelectNextAudioTrack();
+                ShowOverlay();
+                e.Handled = true;
+                break;
+            case VirtualKey.V:
+                SelectNextSubtitleTrack();
+                ShowOverlay();
+                e.Handled = true;
+                break;
         }
+    }
+
+    private void SelectNextAudioTrack()
+    {
+        var tracks = _lastState.AudioTracks;
+        if (!_lastState.HasMedia || tracks.Count == 0)
+        {
+            return;
+        }
+
+        var selectedIndex = FindTrackIndex(tracks, _lastState.SelectedAudioTrackId);
+        var nextTrack = tracks[(selectedIndex + 1) % tracks.Count];
+        _player.SelectAudioTrack(nextTrack.Id);
+    }
+
+    private void SelectNextSubtitleTrack()
+    {
+        var tracks = _lastState.SubtitleTracks;
+        if (!_lastState.HasMedia || tracks.Count == 0)
+        {
+            return;
+        }
+
+        var selectedIndex = FindTrackIndex(tracks, _lastState.SelectedSubtitleTrackId);
+        var nextTrack = tracks[(selectedIndex + 1) % tracks.Count];
+        _player.SelectSubtitleTrack(nextTrack.Id);
+    }
+
+    private static int FindTrackIndex(IReadOnlyList<TrackInfo> tracks, int? selectedTrackId)
+    {
+        if (selectedTrackId is null)
+        {
+            return -1;
+        }
+
+        for (var index = 0; index < tracks.Count; index++)
+        {
+            if (tracks[index].Id == selectedTrackId.Value)
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 
     private void RootGrid_PointerMoved(object sender, PointerRoutedEventArgs e)
@@ -192,8 +290,22 @@ public sealed partial class MainWindow : Window
         UpdateOverlayViewportInsets();
     }
 
-    private async Task LoadFileAsync(string path)
+    private async Task LoadFileAsync(string path, bool isSwapChainRecovery = false)
     {
+        if (!isSwapChainRecovery)
+        {
+            _swapChainRecoveryAttempts = 0;
+        }
+
+        var loadGeneration = ++_loadGeneration;
+        var cancellation = new CancellationTokenSource();
+        var cancellationToken = cancellation.Token;
+        var previousCancellation = _loadCancellation;
+        _loadCancellation = cancellation;
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        CancelSwapChainBinding();
+
         ClearError();
         ShowOverlay();
 
@@ -201,9 +313,63 @@ public sealed partial class MainWindow : Window
         {
             UpdateCompositionSizeFromPanel();
             UpdateOverlayViewportInsets();
-            await _player.LoadAsync(path);
+            await _player.LoadAsync(path, cancellationToken);
+            if (loadGeneration != _loadGeneration)
+            {
+                return;
+            }
+
             UpdateCompositionSizeFromPanel();
             UpdateOverlayViewportInsets();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Debug.WriteLine($"[Mio.WinUI] media load superseded path={path}");
+        }
+        catch (Exception ex) when (ex is MpvException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            if (loadGeneration == _loadGeneration)
+            {
+                ShowError(ex.Message);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_loadCancellation, cancellation))
+            {
+                _loadCancellation = null;
+                cancellation.Dispose();
+            }
+        }
+    }
+
+    private async Task LoadExternalSubtitleAsync()
+    {
+        if (!_lastState.HasMedia)
+        {
+            return;
+        }
+
+        var picker = new FileOpenPicker
+        {
+            SuggestedStartLocation = PickerLocationId.VideosLibrary
+        };
+        InitializeWithWindow.Initialize(picker, _hwnd);
+        picker.FileTypeFilter.Add(".srt");
+        picker.FileTypeFilter.Add(".ass");
+        picker.FileTypeFilter.Add(".ssa");
+        picker.FileTypeFilter.Add(".vtt");
+
+        try
+        {
+            var file = await picker.PickSingleFileAsync();
+            if (file is null)
+            {
+                return;
+            }
+
+            _player.AddSubtitleFile(file.Path);
+            ShowOverlay();
         }
         catch (Exception ex) when (ex is MpvException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -221,7 +387,7 @@ public sealed partial class MainWindow : Window
             UpdateOverlayViewportInsets();
             UpdateIdleLayer();
 
-            if (!_lastState.HasMedia || _lastState.IsPaused)
+            if (!_lastState.HasMedia || _lastState.IsPaused || _lastState.IsEndOfFile)
             {
                 ShowOverlay();
             }
@@ -232,30 +398,147 @@ public sealed partial class MainWindow : Window
     {
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (swapChain == IntPtr.Zero || swapChain == _boundSwapChain)
-            {
-                return;
-            }
+            StartSwapChainBinding(swapChain);
+        });
+    }
 
-            var hr = SwapChainPanelInterop.SetSwapChain(VideoPanel, swapChain);
-            Debug.WriteLine($"[Mio.WinUI] SetSwapChain result={ComHelpers.FormatHResult(hr)}");
-            if (ComHelpers.Failed(hr))
+    private void StartSwapChainBinding(IntPtr swapChain)
+    {
+        if (swapChain == IntPtr.Zero || swapChain == _boundSwapChain)
+        {
+            return;
+        }
+
+        CancelSwapChainBinding();
+        var cancellation = new CancellationTokenSource();
+        _swapChainBindCancellation = cancellation;
+        var generation = _swapChainBindGeneration;
+        _ = BindSwapChainAsync(swapChain, generation, cancellation.Token);
+    }
+
+    private async Task BindSwapChainAsync(IntPtr swapChain, long generation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var hr = 0;
+            var clearedPreviousSwapChain = false;
+            for (var attempt = 1; attempt <= SwapChainBindMaxAttempts; attempt++)
             {
-                if (hr == unchecked((int)0x80004002))
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!IsCurrentSwapChainBinding(generation, cancellationToken))
                 {
-                    ShowError("SwapChainPanel native interop failed: ISwapChainPanelNative not available. Check WinUI 3 dxinterop GUID/interface.");
                     return;
                 }
 
-                ShowError($"SetSwapChain failed: HRESULT {ComHelpers.FormatHResult(hr)}");
+                if (!VideoPanel.IsLoaded || VideoPanel.ActualWidth <= 0 || VideoPanel.ActualHeight <= 0)
+                {
+                    Debug.WriteLine($"[Mio.WinUI] SetSwapChain attempt {attempt} delayed: panel not ready");
+                    await Task.Delay(SwapChainBindRetryDelay, cancellationToken);
+                    continue;
+                }
+
+                if (!clearedPreviousSwapChain && _boundSwapChain != IntPtr.Zero)
+                {
+                    var clearHr = SwapChainPanelInterop.SetSwapChain(VideoPanel, IntPtr.Zero);
+                    Debug.WriteLine($"[Mio.WinUI] clear previous SwapChain result={ComHelpers.FormatHResult(clearHr)}");
+                    _boundSwapChain = IntPtr.Zero;
+                    clearedPreviousSwapChain = true;
+                }
+
+                UpdateCompositionSizeFromPanel();
+                hr = SwapChainPanelInterop.SetSwapChain(VideoPanel, swapChain);
+                Debug.WriteLine($"[Mio.WinUI] SetSwapChain attempt={attempt} generation={generation} result={ComHelpers.FormatHResult(hr)}");
+                if (!ComHelpers.Failed(hr))
+                {
+                    Debug.WriteLine($"[Mio.WinUI] SetSwapChain success ptr=0x{swapChain.ToInt64():X} HRESULT {ComHelpers.FormatHResult(hr)}");
+                    _boundSwapChain = swapChain;
+                    _swapChainRecoveryAttempts = 0;
+                    ClearError();
+                    UpdateCompositionSizeFromPanel();
+                    UpdateOverlayViewportInsets();
+                    return;
+                }
+
+                if (hr != unchecked((int)0x80004005))
+                {
+                    break;
+                }
+
+                await Task.Delay(SwapChainBindRetryDelay, cancellationToken);
+            }
+
+            if (!IsCurrentSwapChainBinding(generation, cancellationToken))
+            {
                 return;
             }
 
-            Debug.WriteLine($"[Mio.WinUI] SetSwapChain success ptr=0x{swapChain.ToInt64():X} HRESULT {ComHelpers.FormatHResult(hr)}");
-            _boundSwapChain = swapChain;
-            UpdateCompositionSizeFromPanel();
-            UpdateOverlayViewportInsets();
-        });
+            if (hr == unchecked((int)0x80004005) &&
+                await TryRecoverSwapChainBindingAsync(generation, cancellationToken))
+            {
+                return;
+            }
+
+            if (!IsCurrentSwapChainBinding(generation, cancellationToken))
+            {
+                return;
+            }
+
+            if (hr == unchecked((int)0x80004002))
+            {
+                ShowError("SwapChainPanel native interop failed: ISwapChainPanelNative not available. Check WinUI 3 dxinterop GUID/interface.");
+                return;
+            }
+
+            ShowError($"SetSwapChain failed: HRESULT {ComHelpers.FormatHResult(hr)}");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Debug.WriteLine($"[Mio.WinUI] SetSwapChain canceled generation={generation}");
+        }
+    }
+
+    private async Task<bool> TryRecoverSwapChainBindingAsync(long generation, CancellationToken cancellationToken)
+    {
+        var currentFile = _lastState.CurrentFile;
+        if (!IsCurrentSwapChainBinding(generation, cancellationToken) ||
+            _isRecoveringSwapChain ||
+            _swapChainRecoveryAttempts >= 1 ||
+            string.IsNullOrWhiteSpace(currentFile))
+        {
+            return false;
+        }
+
+        _swapChainRecoveryAttempts++;
+        _isRecoveringSwapChain = true;
+        try
+        {
+            Debug.WriteLine("[Mio.WinUI] recovering SetSwapChain E_FAIL by reloading current file after panel is ready");
+            await LoadFileAsync(currentFile, isSwapChainRecovery: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is MpvException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            Debug.WriteLine($"[Mio.WinUI] SetSwapChain recovery failed: {ex.Message}");
+            ShowError(ex.Message);
+            return true;
+        }
+        finally
+        {
+            _isRecoveringSwapChain = false;
+        }
+    }
+
+    private bool IsCurrentSwapChainBinding(long generation, CancellationToken cancellationToken)
+    {
+        return !cancellationToken.IsCancellationRequested && generation == _swapChainBindGeneration;
+    }
+
+    private void CancelSwapChainBinding()
+    {
+        _swapChainBindGeneration++;
+        _swapChainBindCancellation?.Cancel();
+        _swapChainBindCancellation?.Dispose();
+        _swapChainBindCancellation = null;
     }
 
     private void OnFullscreenChanged(bool isFullscreen)
@@ -361,7 +644,7 @@ public sealed partial class MainWindow : Window
 
     private void HideOverlayWhenIdle()
     {
-        if (!_lastState.HasMedia || _lastState.IsPaused || Overlay.IsPointerWithin || Overlay.IsDragging)
+        if (!_lastState.HasMedia || _lastState.IsPaused || _lastState.IsEndOfFile || Overlay.IsPointerWithin || Overlay.IsDragging)
         {
             return;
         }
@@ -373,6 +656,12 @@ public sealed partial class MainWindow : Window
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         Debug.WriteLine("[Mio.WinUI] dispose start");
+        _loadGeneration++;
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        _loadCancellation = null;
+        CancelSwapChainBinding();
+
         try
         {
             if (_boundSwapChain != IntPtr.Zero)

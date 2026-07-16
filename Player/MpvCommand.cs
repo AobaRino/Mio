@@ -11,6 +11,16 @@ public static class MpvCommand
 
     public static string[] Seek(double seconds, string mode)
     {
-        return new[] { "seek", seconds.ToString("0.###", CultureInfo.InvariantCulture), mode, "exact" };
+        return new[]
+        {
+            "seek",
+            seconds.ToString("0.###", CultureInfo.InvariantCulture),
+            $"{mode}+exact"
+        };
+    }
+
+    public static string[] SubAdd(string path, string flags = "select")
+    {
+        return new[] { "sub-add", path, flags };
     }
 }

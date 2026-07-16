@@ -14,7 +14,7 @@ Mio 使用 in-process `libmpv-2.dll`，并明确配置 mpv：
 - `target-colorspace-hint=auto`
 - `input-default-bindings=no`
 - `input-vo-keyboard=no`
-- `keep-open=no`
+- `keep-open=yes`
 
 核心路径是：
 
@@ -49,12 +49,18 @@ dotnet run
 
 底部控制区包含独立 seek row 和 controls row：播放按钮、时间、音量与全屏按钮共享统一基准线。进度条和音量条使用轻量 Slider 样式，去掉默认 tooltip，并通过 UI 侧插值让播放进度连续推进；拖动 seek 时会暂停插值，避免状态刷新抢占用户操作。
 
+## 字幕和音轨
+
+Mio 支持读取 mpv `track-list` 中的字幕轨道和音轨，并通过底部 overlay 的轻量菜单切换。字幕菜单支持关闭字幕、自动选择字幕、切换内嵌字幕轨道，以及加载外部 `.srt` / `.ass` / `.ssa` / `.vtt` 字幕文件；音轨菜单支持切换当前视频内的音轨。
+
+字幕由 mpv 原生字幕渲染管线合成到视频输出中，Mio 不使用 XAML 解析或绘制字幕。当前暂不提供字幕样式设置、字幕下载、音频 passthrough UI 或复杂轨道设置页。
+
 ## 当前限制
 
 - `display-swapchain` 必须在加载后 2 秒内可用，否则会显示明确错误。
 - HDR / HDR10 / Windows Advanced Color 方向只预留架构，第一版不保证所有 HDR 显示器都完美触发 HDR 输出。
 - Dolby Vision 当前只按兼容播放方向预留，不宣传完整支持。
-- 音频 passthrough、音轨/字幕轨道列表、字幕加载、HDR 输出格式选择、缩略图预览和播放列表留给后续设置与 UI。
+- 音频 passthrough、字幕样式设置、HDR 输出格式选择、缩略图预览和播放列表留给后续设置与 UI。
 
 ## 后续路线
 

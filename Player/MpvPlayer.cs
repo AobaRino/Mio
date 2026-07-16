@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +22,7 @@ public sealed class MpvPlayer : IMediaPlayer
         ("target-colorspace-hint", "auto"),
         ("input-default-bindings", "no"),
         ("input-vo-keyboard", "no"),
-        ("keep-open", "no")
+        ("keep-open", "yes")
     };
 
     private readonly object _sync = new();
@@ -115,6 +117,7 @@ public sealed class MpvPlayer : IMediaPlayer
             _state.MediaTitle = Path.GetFileName(fullPath);
             _state.HasMedia = true;
             _state.IsIdleActive = false;
+            _state.IsEndOfFile = false;
             _state.IsSwapChainReady = false;
             snapshot = _state.Clone();
         }
@@ -125,8 +128,15 @@ public sealed class MpvPlayer : IMediaPlayer
 
     public void TogglePause()
     {
-        var paused = State.IsPaused;
-        TrySetProperty(MpvProperty.Pause, paused ? "no" : "yes", "pause result");
+        var state = State;
+        if (state.IsEndOfFile)
+        {
+            TryCommand(MpvCommand.Seek(0, "absolute"), "restart seek result");
+            TrySetProperty(MpvProperty.Pause, "no", "restart pause result");
+            return;
+        }
+
+        TrySetProperty(MpvProperty.Pause, state.IsPaused ? "no" : "yes", "pause result");
     }
 
     public void SeekRelative(double seconds)
@@ -152,12 +162,106 @@ public sealed class MpvPlayer : IMediaPlayer
 
         var target = Math.Min(state.Duration, Math.Max(0, seconds));
         TryCommand(MpvCommand.Seek(target, "absolute"), "seek result");
+        if (state.IsEndOfFile && target < state.Duration)
+        {
+            TrySetProperty(MpvProperty.Pause, "no", "resume after seek result");
+        }
     }
 
     public void SetVolume(double volume)
     {
         var clamped = Math.Min(100, Math.Max(0, volume));
         TrySetProperty(MpvProperty.Volume, clamped.ToString("0.###", CultureInfo.InvariantCulture), "volume result");
+    }
+
+    public void SelectAudioTrack(int trackId)
+    {
+        var state = State;
+        if (!state.HasMedia || !state.AudioTracks.Any(track => track.Id == trackId))
+        {
+            Log($"select audio track ignored: id={trackId}");
+            return;
+        }
+
+        TrySetProperty(MpvProperty.Aid, trackId.ToString(CultureInfo.InvariantCulture), "select audio track");
+        PublishStateSnapshot();
+    }
+
+    public void SelectSubtitleTrack(int trackId)
+    {
+        var state = State;
+        if (!state.HasMedia || !state.SubtitleTracks.Any(track => track.Id == trackId))
+        {
+            Log($"select subtitle track ignored: id={trackId}");
+            return;
+        }
+
+        TrySetProperty(MpvProperty.Sid, trackId.ToString(CultureInfo.InvariantCulture), "select subtitle track");
+        TrySetProperty(MpvProperty.SubVisibility, "yes", "show subtitles");
+        PublishStateSnapshot();
+    }
+
+    public void DisableSubtitles()
+    {
+        if (!State.HasMedia)
+        {
+            return;
+        }
+
+        TrySetProperty(MpvProperty.Sid, "no", "disable subtitles");
+        PublishStateSnapshot();
+    }
+
+    public void AutoSelectSubtitles()
+    {
+        if (!State.HasMedia)
+        {
+            return;
+        }
+
+        TrySetProperty(MpvProperty.Sid, "auto", "auto subtitles");
+        TrySetProperty(MpvProperty.SubVisibility, "yes", "show subtitles");
+        PublishStateSnapshot();
+    }
+
+    public void ToggleSubtitleVisibility()
+    {
+        var state = State;
+        if (!state.HasMedia)
+        {
+            return;
+        }
+
+        TrySetProperty(MpvProperty.SubVisibility, state.SubtitlesVisible ? "no" : "yes", "toggle subtitle visibility");
+        PublishStateSnapshot();
+    }
+
+    public void AddSubtitleFile(string path)
+    {
+        ThrowIfDisposed();
+        EnsureInitialized();
+
+        var fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("Subtitle file was not found.", fullPath);
+        }
+
+        int result;
+        lock (_sync)
+        {
+            if (!_state.HasMedia || _state.IsIdleActive)
+            {
+                Log($"sub-add ignored: no media path={fullPath}");
+                return;
+            }
+
+            result = MpvNative.Command(_handle, MpvCommand.SubAdd(fullPath));
+            Log($"sub-add result={DescribeResult(result)} path={fullPath}");
+        }
+
+        MpvNative.ThrowIfError(result, "sub-add");
+        PublishStateSnapshot();
     }
 
     public void SetCompositionSize(int width, int height)
@@ -181,15 +285,17 @@ public sealed class MpvPlayer : IMediaPlayer
                 return;
             }
 
-            _lastCompositionWidth = width;
-            _lastCompositionHeight = height;
             var value = string.Create(CultureInfo.InvariantCulture, $"{width}x{height}");
             var result = MpvNative.SetPropertyString(_handle, MpvProperty.D3D11CompositionSize, value);
             Log($"d3d11-composition-size set {value} result={DescribeResult(result)}");
             if (result < 0)
             {
                 Log($"d3d11-composition-size failed: {MpvNative.ErrorString(result)} ({result})");
+                return;
             }
+
+            _lastCompositionWidth = width;
+            _lastCompositionHeight = height;
         }
     }
 
@@ -424,14 +530,139 @@ public sealed class MpvPlayer : IMediaPlayer
             next.IsIdleActive = idleActive;
         }
 
+        if (MpvNative.TryGetFlag(_handle, MpvProperty.EofReached, out var eofReached))
+        {
+            next.IsEndOfFile = eofReached;
+        }
+
         next.CurrentFile = _currentFile;
         next.MediaTitle = MpvNative.GetPropertyString(_handle, MpvProperty.MediaTitle)
             ?? Path.GetFileName(_currentFile)
             ?? "Mio";
         next.HasMedia = !next.IsIdleActive && !string.IsNullOrWhiteSpace(_currentFile);
         next.IsSwapChainReady = _lastSwapChain != IntPtr.Zero;
+        if (next.HasMedia)
+        {
+            var (audioTracks, subtitleTracks) = ReadTrackListsLocked();
+            next.AudioTracks = audioTracks;
+            next.SubtitleTracks = subtitleTracks;
+            next.SelectedAudioTrackId = FindSelectedTrackId(audioTracks);
+            next.SelectedSubtitleTrackId = FindSelectedTrackId(subtitleTracks);
+            if (MpvNative.TryGetFlag(_handle, MpvProperty.SubVisibility, out var subtitlesVisible))
+            {
+                next.SubtitlesVisible = subtitlesVisible;
+            }
+        }
+        else
+        {
+            next.AudioTracks = Array.Empty<TrackInfo>();
+            next.SubtitleTracks = Array.Empty<TrackInfo>();
+            next.SelectedAudioTrackId = null;
+            next.SelectedSubtitleTrackId = null;
+            next.SubtitlesVisible = false;
+        }
 
         return next;
+    }
+
+    private (IReadOnlyList<TrackInfo> AudioTracks, IReadOnlyList<TrackInfo> SubtitleTracks) ReadTrackListsLocked()
+    {
+        var audioTracks = new List<TrackInfo>();
+        var subtitleTracks = new List<TrackInfo>();
+
+        if (!MpvNative.TryGetInt64(_handle, MpvProperty.TrackListCount, out var rawCount) || rawCount <= 0)
+        {
+            return (audioTracks, subtitleTracks);
+        }
+
+        var count = (int)Math.Min(rawCount, 512);
+        for (var index = 0; index < count; index++)
+        {
+            var typeValue = GetTrackString(index, "type");
+            var type = typeValue switch
+            {
+                "audio" => MediaTrackType.Audio,
+                "sub" => MediaTrackType.Subtitle,
+                _ => (MediaTrackType?)null
+            };
+
+            if (type is null)
+            {
+                continue;
+            }
+
+            if (!MpvNative.TryGetInt64(_handle, MpvProperty.TrackListProperty(index, "id"), out var rawId))
+            {
+                continue;
+            }
+
+            var id = (int)Math.Clamp(rawId, int.MinValue, int.MaxValue);
+            var title = GetTrackString(index, "title");
+            var language = GetTrackString(index, "lang");
+            var codec = GetTrackString(index, "codec");
+            var isSelected = GetTrackFlag(index, "selected");
+            var isExternal = GetTrackFlag(index, "external");
+            var isDefault = GetTrackFlag(index, "default");
+            var isForced = GetTrackFlag(index, "forced");
+            var track = new TrackInfo
+            {
+                Type = type.Value,
+                Id = id,
+                Title = title,
+                Language = language,
+                Codec = codec,
+                IsSelected = isSelected,
+                IsExternal = isExternal,
+                IsDefault = isDefault,
+                IsForced = isForced,
+                DisplayName = TrackInfo.BuildDisplayName(type.Value, id, title, language, codec, isExternal, isDefault, isForced)
+            };
+
+            if (type == MediaTrackType.Audio)
+            {
+                audioTracks.Add(track);
+            }
+            else
+            {
+                subtitleTracks.Add(track);
+            }
+        }
+
+        return (audioTracks, subtitleTracks);
+    }
+
+    private string? GetTrackString(int index, string name)
+    {
+        return MpvNative.TryGetString(_handle, MpvProperty.TrackListProperty(index, name), out var value)
+            ? value
+            : null;
+    }
+
+    private bool GetTrackFlag(int index, string name)
+    {
+        return MpvNative.TryGetFlag(_handle, MpvProperty.TrackListProperty(index, name), out var value) && value;
+    }
+
+    private static int? FindSelectedTrackId(IEnumerable<TrackInfo> tracks)
+    {
+        return tracks.FirstOrDefault(track => track.IsSelected)?.Id;
+    }
+
+    private void PublishStateSnapshot()
+    {
+        PlayerState snapshot;
+        lock (_sync)
+        {
+            if (!_initialized || _handle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            snapshot = PollStateLocked();
+            _state = snapshot.Clone();
+        }
+
+        StateChanged?.Invoke(snapshot);
     }
 
     private void SetOptionLocked(string name, string value)

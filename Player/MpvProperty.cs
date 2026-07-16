@@ -14,5 +14,15 @@ public static class MpvProperty
     public const string DisplayHeight = "dheight";
     public const string Volume = "volume";
     public const string IdleActive = "idle-active";
+    public const string EofReached = "eof-reached";
     public const string MediaTitle = "media-title";
+    public const string TrackListCount = "track-list/count";
+    public const string Aid = "aid";
+    public const string Sid = "sid";
+    public const string SubVisibility = "sub-visibility";
+
+    public static string TrackListProperty(int index, string name)
+    {
+        return $"track-list/{index}/{name}";
+    }
 }
