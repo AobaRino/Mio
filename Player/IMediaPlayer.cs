@@ -24,6 +24,8 @@ public interface IMediaPlayer : IDisposable
 
     void SetVolume(double volume);
 
+    void ToggleMute();
+
     void SelectAudioTrack(int trackId);
 
     void SelectSubtitleTrack(int trackId);

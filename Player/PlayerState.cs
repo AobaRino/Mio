@@ -50,6 +50,8 @@ public sealed class PlayerState
 
     public double Volume { get; set; } = 100;
 
+    public bool IsMuted { get; set; }
+
     public IReadOnlyList<TrackInfo> AudioTracks { get; set; } = Array.Empty<TrackInfo>();
 
     public IReadOnlyList<TrackInfo> SubtitleTracks { get; set; } = Array.Empty<TrackInfo>();
@@ -94,6 +96,7 @@ public sealed class PlayerState
             IsIdleActive = false,
             IsPaused = IsPaused,
             Volume = Volume,
+            IsMuted = IsMuted,
             IsFullscreen = IsFullscreen
         };
     }

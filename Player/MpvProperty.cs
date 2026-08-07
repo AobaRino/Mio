@@ -13,6 +13,7 @@ public static class MpvProperty
     public const string DisplayWidth = "dwidth";
     public const string DisplayHeight = "dheight";
     public const string Volume = "volume";
+    public const string Mute = "mute";
     public const string IdleActive = "idle-active";
     public const string EofReached = "eof-reached";
     public const string MediaTitle = "media-title";

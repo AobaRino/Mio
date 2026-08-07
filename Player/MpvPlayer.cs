@@ -189,6 +189,12 @@ public sealed class MpvPlayer : IMediaPlayer
         TrySetProperty(MpvProperty.Volume, clamped.ToString("0.###", CultureInfo.InvariantCulture), "volume result");
     }
 
+    public void ToggleMute()
+    {
+        TrySetProperty(MpvProperty.Mute, State.IsMuted ? "no" : "yes", "toggle mute");
+        PublishStateSnapshot();
+    }
+
     public void SelectAudioTrack(int trackId)
     {
         var state = State;
@@ -276,7 +282,7 @@ public sealed class MpvPlayer : IMediaPlayer
         }
 
         MpvNative.ThrowIfError(result, "sub-add");
-        PublishStateSnapshot();
+        PublishStateSnapshot(forceTrackReload: true);
     }
 
     public void SetCompositionSize(int width, int height)
@@ -755,6 +761,11 @@ public sealed class MpvPlayer : IMediaPlayer
             next.Volume = Math.Min(100, Math.Max(0, volume));
         }
 
+        if (MpvNative.TryGetFlag(_handle, MpvProperty.Mute, out var muted))
+        {
+            next.IsMuted = muted;
+        }
+
         if (MpvNative.TryGetFlag(_handle, MpvProperty.IdleActive, out var idleActive))
         {
             next.IsIdleActive = idleActive;
@@ -896,9 +907,9 @@ public sealed class MpvPlayer : IMediaPlayer
         return MpvNative.TryGetFlag(_handle, MpvProperty.TrackListProperty(index, name), out var value) && value;
     }
 
-    // 轨道操作（切轨、加载外挂字幕）之后调用，强制重读 track-list：
-    // sub-add 之类的操作会改变轨道集合，不能等下一次 count 比对。
-    private void PublishStateSnapshot()
+    // forceTrackReload 只在轨道集合可能变化时才需要（sub-add）。切换选中轨道、
+    // 静音之类的操作不改变集合，走 count 比对即可，不必重读整个 track-list。
+    private void PublishStateSnapshot(bool forceTrackReload = false)
     {
         PlayerState snapshot;
         lock (_sync)
@@ -908,7 +919,7 @@ public sealed class MpvPlayer : IMediaPlayer
                 return;
             }
 
-            snapshot = PollStateLocked(forceTrackReload: true);
+            snapshot = PollStateLocked(forceTrackReload);
             _state = snapshot.Clone();
         }
 
