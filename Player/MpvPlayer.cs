@@ -25,7 +25,22 @@ public sealed class MpvPlayer : IMediaPlayer
         ("keep-open", "yes")
     };
 
+    private const int MaxTrackCount = 512;
+    private const int MaxRecentLogErrors = 5;
+    private const double EventWaitSeconds = 1.0;
+    private static readonly TimeSpan BackgroundShutdownTimeout = TimeSpan.FromSeconds(2);
+
     private readonly object _sync = new();
+    private readonly object _errorSync = new();
+    private readonly List<string> _recentLogErrors = new();
+    private CancellationTokenSource? _eventCancellation;
+    private Task? _eventTask;
+    private long _mediaGeneration;
+    private long _loadErrorGeneration = -1;
+    private string? _loadErrorMessage;
+    private IReadOnlyList<TrackInfo> _cachedAudioTracks = Array.Empty<TrackInfo>();
+    private IReadOnlyList<TrackInfo> _cachedSubtitleTracks = Array.Empty<TrackInfo>();
+    private int _lastTrackListCount = -1;
     private IntPtr _handle;
     private CancellationTokenSource? _pollCancellation;
     private Task? _pollTask;
@@ -35,8 +50,6 @@ public sealed class MpvPlayer : IMediaPlayer
     private int _lastCompositionWidth;
     private int _lastCompositionHeight;
     private bool _loadFileSubmitted;
-    private int _lastSwapChainResult;
-    private long _lastSwapChainRaw;
     private bool _initialized;
     private bool _disposed;
 
@@ -83,10 +96,15 @@ public sealed class MpvPlayer : IMediaPlayer
             Log($"mpv_initialize result={DescribeResult(initializeResult)}");
             MpvNative.ThrowIfError(initializeResult, "mpv_initialize");
 
+            // 没有这个，解码失败之类的原因只会留在 mpv 内部，外面看不到。
+            var logResult = MpvNative.RequestLogMessages(_handle, "error");
+            Log($"mpv_request_log_messages(error) result={DescribeResult(logResult)}");
+
             _initialized = true;
         }
 
         StartPolling();
+        StartEventLoop();
     }
 
     public async Task LoadAsync(string path, CancellationToken cancellationToken = default)
@@ -100,6 +118,8 @@ public sealed class MpvPlayer : IMediaPlayer
             throw new FileNotFoundException("Media file was not found.", fullPath);
         }
 
+        var mediaGeneration = BeginMediaGeneration();
+
         PlayerState snapshot;
         lock (_sync)
         {
@@ -112,18 +132,13 @@ public sealed class MpvPlayer : IMediaPlayer
             _currentFile = fullPath;
             _lastSwapChain = IntPtr.Zero;
             _loadFileSubmitted = result >= 0;
-            _state = _state.Clone();
-            _state.CurrentFile = fullPath;
-            _state.MediaTitle = Path.GetFileName(fullPath);
-            _state.HasMedia = true;
-            _state.IsIdleActive = false;
-            _state.IsEndOfFile = false;
-            _state.IsSwapChainReady = false;
+            ResetTrackCacheLocked();
+            _state = _state.CloneForNewMedia(fullPath, Path.GetFileName(fullPath));
             snapshot = _state.Clone();
         }
 
         StateChanged?.Invoke(snapshot);
-        await WaitForDisplaySwapChainAsync(cancellationToken);
+        await WaitForDisplaySwapChainAsync(mediaGeneration, cancellationToken);
     }
 
     public void TogglePause()
@@ -309,8 +324,37 @@ public sealed class MpvPlayer : IMediaPlayer
         _disposed = true;
         Log("dispose start");
         _pollCancellation?.Cancel();
+        _eventCancellation?.Cancel();
 
         IntPtr handle;
+        lock (_sync)
+        {
+            handle = _handle;
+        }
+
+        // 唤醒可能正阻塞在 mpv_wait_event 的事件线程，让它尽快看到取消信号。
+        if (handle != IntPtr.Zero)
+        {
+            try
+            {
+                MpvNative.Wakeup(handle);
+            }
+            catch (Exception ex)
+            {
+                Log($"mpv_wakeup failed: {ex.Message}");
+            }
+        }
+
+        // 事件线程在锁外调用 mpv_wait_event，必须确认后台任务都已退出才能销毁 handle。
+        // 等不到就宁可泄漏 handle：进程即将退出，泄漏无害，use-after-free 会崩。
+        if (!WaitForBackgroundTasks())
+        {
+            Log("background tasks still running; skipping mpv_terminate_destroy to avoid use-after-free");
+            _pollCancellation?.Dispose();
+            _eventCancellation?.Dispose();
+            return;
+        }
+
         lock (_sync)
         {
             handle = _handle;
@@ -331,7 +375,38 @@ public sealed class MpvPlayer : IMediaPlayer
         }
 
         _pollCancellation?.Dispose();
+        _eventCancellation?.Dispose();
         Log("dispose complete");
+    }
+
+    private bool WaitForBackgroundTasks()
+    {
+        var tasks = new List<Task>(2);
+        if (_eventTask is not null)
+        {
+            tasks.Add(_eventTask);
+        }
+
+        if (_pollTask is not null)
+        {
+            tasks.Add(_pollTask);
+        }
+
+        if (tasks.Count == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            return Task.WaitAll(tasks.ToArray(), BackgroundShutdownTimeout);
+        }
+        catch (AggregateException ex)
+        {
+            // 任务已经结束，只是带着异常；handle 此刻不再被使用，销毁是安全的。
+            Log($"background task faulted during shutdown: {ex.InnerException?.Message ?? ex.Message}");
+            return true;
+        }
     }
 
     private void StartPolling()
@@ -340,7 +415,150 @@ public sealed class MpvPlayer : IMediaPlayer
         _pollTask = PollStateAsync(_pollCancellation.Token);
     }
 
-    private async Task WaitForDisplaySwapChainAsync(CancellationToken cancellationToken)
+    private void StartEventLoop()
+    {
+        _eventCancellation = new CancellationTokenSource();
+        var cancellationToken = _eventCancellation.Token;
+
+        // mpv_wait_event 是阻塞调用，且同一时刻只允许一个线程调用它，
+        // 所以固定用一个专属长驻线程，不占线程池。
+        _eventTask = Task.Factory.StartNew(
+            () => RunEventLoop(cancellationToken),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+    }
+
+    private void RunEventLoop(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            IntPtr handle;
+            lock (_sync)
+            {
+                handle = _handle;
+            }
+
+            if (handle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            MpvEvent? mpvEvent;
+            try
+            {
+                mpvEvent = MpvNative.WaitEvent(handle, EventWaitSeconds);
+            }
+            catch (Exception ex)
+            {
+                Log($"mpv_wait_event failed: {ex.Message}");
+                return;
+            }
+
+            if (mpvEvent is null)
+            {
+                continue;
+            }
+
+            switch (mpvEvent.Value.EventId)
+            {
+                case MpvEventId.Shutdown:
+                    Log("event shutdown");
+                    return;
+                case MpvEventId.LogMessage:
+                    HandleLogMessage(mpvEvent.Value.Data);
+                    break;
+                case MpvEventId.EndFile:
+                    HandleEndFile(mpvEvent.Value.Data);
+                    break;
+                case MpvEventId.FileLoaded:
+                    Log("event file-loaded");
+                    break;
+            }
+        }
+    }
+
+    private void HandleLogMessage(IntPtr data)
+    {
+        var message = MpvNative.ReadLogMessage(data);
+        if (message is null)
+        {
+            return;
+        }
+
+        Log($"mpv log: {message}");
+        lock (_errorSync)
+        {
+            if (_recentLogErrors.Count >= MaxRecentLogErrors)
+            {
+                _recentLogErrors.RemoveAt(0);
+            }
+
+            _recentLogErrors.Add(message);
+        }
+    }
+
+    private void HandleEndFile(IntPtr data)
+    {
+        var endFile = MpvNative.ReadEndFile(data);
+        var reason = (MpvEndFileReason)endFile.Reason;
+        Log($"event end-file reason={reason} error={endFile.Error}");
+
+        if (reason != MpvEndFileReason.Error)
+        {
+            return;
+        }
+
+        var message = endFile.Error < 0
+            ? $"Playback failed: {MpvNative.ErrorString(endFile.Error)} ({endFile.Error})"
+            : "Playback failed: mpv could not open this file.";
+
+        lock (_errorSync)
+        {
+            _loadErrorGeneration = _mediaGeneration;
+            _loadErrorMessage = message;
+        }
+
+        // 播放中途失败时没有调用方在等待，这里是唯一的上报通道。
+        ErrorOccurred?.Invoke(AppendRecentLogErrors(message));
+    }
+
+    private long BeginMediaGeneration()
+    {
+        lock (_errorSync)
+        {
+            _recentLogErrors.Clear();
+            _loadErrorMessage = null;
+            return ++_mediaGeneration;
+        }
+    }
+
+    private string? TryGetLoadError(long mediaGeneration)
+    {
+        lock (_errorSync)
+        {
+            return _loadErrorGeneration == mediaGeneration && _loadErrorMessage is not null
+                ? AppendRecentLogErrorsLocked(_loadErrorMessage)
+                : null;
+        }
+    }
+
+    private string AppendRecentLogErrors(string message)
+    {
+        lock (_errorSync)
+        {
+            return AppendRecentLogErrorsLocked(message);
+        }
+    }
+
+    private string AppendRecentLogErrorsLocked(string message)
+    {
+        return _recentLogErrors.Count == 0
+            ? message
+            : message + Environment.NewLine + string.Join(Environment.NewLine, _recentLogErrors);
+    }
+
+    private async Task WaitForDisplaySwapChainAsync(long mediaGeneration, CancellationToken cancellationToken)
     {
         Log("waiting display-swapchain");
         var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
@@ -351,6 +569,14 @@ public sealed class MpvPlayer : IMediaPlayer
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            // mpv 已经明确报告这次加载失败，再等 swapchain 只会把"文件打不开"
+            // 误报成 D3D11 配置问题。
+            var loadError = TryGetLoadError(mediaGeneration);
+            if (loadError is not null)
+            {
+                throw new MpvException(loadError);
+            }
+
             IntPtr swapChain = IntPtr.Zero;
             PlayerState snapshot;
             var changed = false;
@@ -358,8 +584,6 @@ public sealed class MpvPlayer : IMediaPlayer
             lock (_sync)
             {
                 diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
-                _lastSwapChainResult = diagnostics.SwapChainResult;
-                _lastSwapChainRaw = diagnostics.SwapChainRaw;
 
                 if (diagnostics.SwapChainPointer != IntPtr.Zero)
                 {
@@ -397,14 +621,20 @@ public sealed class MpvPlayer : IMediaPlayer
             await Task.Delay(50, cancellationToken).ConfigureAwait(false);
         }
 
+        var timeoutLoadError = TryGetLoadError(mediaGeneration);
+        if (timeoutLoadError is not null)
+        {
+            throw new MpvException(timeoutLoadError);
+        }
+
         lock (_sync)
         {
             diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
         }
 
-        var message = diagnostics.ToTimeoutMessage();
-        ErrorOccurred?.Invoke(message);
-        throw new MpvException(message);
+        // 只抛出，由 LoadAsync 的调用方统一上报；ErrorOccurred 留给没有调用方
+        // 在等待的异步错误，避免同一条错误走两个通道。
+        throw new MpvException(AppendRecentLogErrors(diagnostics.ToTimeoutMessage()));
     }
 
     private DisplaySwapChainDiagnostics ReadDisplaySwapChainDiagnosticsLocked()
@@ -474,7 +704,7 @@ public sealed class MpvPlayer : IMediaPlayer
         }
     }
 
-    private PlayerState PollStateLocked()
+    private PlayerState PollStateLocked(bool forceTrackReload = false)
     {
         var next = _state.Clone();
 
@@ -543,11 +773,11 @@ public sealed class MpvPlayer : IMediaPlayer
         next.IsSwapChainReady = _lastSwapChain != IntPtr.Zero;
         if (next.HasMedia)
         {
-            var (audioTracks, subtitleTracks) = ReadTrackListsLocked();
-            next.AudioTracks = audioTracks;
-            next.SubtitleTracks = subtitleTracks;
-            next.SelectedAudioTrackId = FindSelectedTrackId(audioTracks);
-            next.SelectedSubtitleTrackId = FindSelectedTrackId(subtitleTracks);
+            RefreshTrackListsLocked(forceTrackReload);
+            next.AudioTracks = _cachedAudioTracks;
+            next.SubtitleTracks = _cachedSubtitleTracks;
+            next.SelectedAudioTrackId = ReadCurrentTrackIdLocked(MpvProperty.CurrentAudioTrackId);
+            next.SelectedSubtitleTrackId = ReadCurrentTrackIdLocked(MpvProperty.CurrentSubtitleTrackId);
             if (MpvNative.TryGetFlag(_handle, MpvProperty.SubVisibility, out var subtitlesVisible))
             {
                 next.SubtitlesVisible = subtitlesVisible;
@@ -555,6 +785,7 @@ public sealed class MpvPlayer : IMediaPlayer
         }
         else
         {
+            ResetTrackCacheLocked();
             next.AudioTracks = Array.Empty<TrackInfo>();
             next.SubtitleTracks = Array.Empty<TrackInfo>();
             next.SelectedAudioTrackId = null;
@@ -565,17 +796,38 @@ public sealed class MpvPlayer : IMediaPlayer
         return next;
     }
 
-    private (IReadOnlyList<TrackInfo> AudioTracks, IReadOnlyList<TrackInfo> SubtitleTracks) ReadTrackListsLocked()
+    private int? ReadCurrentTrackIdLocked(string property)
     {
+        // 轨道未选中时 mpv 直接让 current-tracks/<type> 不可用，读取失败即代表 null。
+        return MpvNative.TryGetInt64(_handle, property, out var id) && id >= 0 && id <= int.MaxValue
+            ? (int)id
+            : null;
+    }
+
+    private void ResetTrackCacheLocked()
+    {
+        _lastTrackListCount = -1;
+        _cachedAudioTracks = Array.Empty<TrackInfo>();
+        _cachedSubtitleTracks = Array.Empty<TrackInfo>();
+    }
+
+    // 全量读取 track-list 每条轨道要 ~8 次 P/Invoke，而轨道集合在播放期间几乎不变。
+    // 稳态下只比对 track-list/count，变化时才重建；轨道增删之外的操作（切换选中轨道）
+    // 由 current-tracks/<type>/id 反映，不需要重读整个列表。
+    private void RefreshTrackListsLocked(bool force)
+    {
+        var count = MpvNative.TryGetInt64(_handle, MpvProperty.TrackListCount, out var rawCount)
+            ? (int)Math.Clamp(rawCount, 0, MaxTrackCount)
+            : 0;
+
+        if (!force && count == _lastTrackListCount)
+        {
+            return;
+        }
+
         var audioTracks = new List<TrackInfo>();
         var subtitleTracks = new List<TrackInfo>();
 
-        if (!MpvNative.TryGetInt64(_handle, MpvProperty.TrackListCount, out var rawCount) || rawCount <= 0)
-        {
-            return (audioTracks, subtitleTracks);
-        }
-
-        var count = (int)Math.Min(rawCount, 512);
         for (var index = 0; index < count; index++)
         {
             var typeValue = GetTrackString(index, "type");
@@ -600,7 +852,6 @@ public sealed class MpvPlayer : IMediaPlayer
             var title = GetTrackString(index, "title");
             var language = GetTrackString(index, "lang");
             var codec = GetTrackString(index, "codec");
-            var isSelected = GetTrackFlag(index, "selected");
             var isExternal = GetTrackFlag(index, "external");
             var isDefault = GetTrackFlag(index, "default");
             var isForced = GetTrackFlag(index, "forced");
@@ -611,7 +862,6 @@ public sealed class MpvPlayer : IMediaPlayer
                 Title = title,
                 Language = language,
                 Codec = codec,
-                IsSelected = isSelected,
                 IsExternal = isExternal,
                 IsDefault = isDefault,
                 IsForced = isForced,
@@ -628,7 +878,10 @@ public sealed class MpvPlayer : IMediaPlayer
             }
         }
 
-        return (audioTracks, subtitleTracks);
+        _cachedAudioTracks = audioTracks;
+        _cachedSubtitleTracks = subtitleTracks;
+        _lastTrackListCount = count;
+        Log($"track-list rebuilt count={count} audio={audioTracks.Count} sub={subtitleTracks.Count} force={force}");
     }
 
     private string? GetTrackString(int index, string name)
@@ -643,11 +896,8 @@ public sealed class MpvPlayer : IMediaPlayer
         return MpvNative.TryGetFlag(_handle, MpvProperty.TrackListProperty(index, name), out var value) && value;
     }
 
-    private static int? FindSelectedTrackId(IEnumerable<TrackInfo> tracks)
-    {
-        return tracks.FirstOrDefault(track => track.IsSelected)?.Id;
-    }
-
+    // 轨道操作（切轨、加载外挂字幕）之后调用，强制重读 track-list：
+    // sub-add 之类的操作会改变轨道集合，不能等下一次 count 比对。
     private void PublishStateSnapshot()
     {
         PlayerState snapshot;
@@ -658,7 +908,7 @@ public sealed class MpvPlayer : IMediaPlayer
                 return;
             }
 
-            snapshot = PollStateLocked();
+            snapshot = PollStateLocked(forceTrackReload: true);
             _state = snapshot.Clone();
         }
 
