@@ -15,6 +15,8 @@ namespace Mio.Controls;
 public sealed partial class PlayerOverlay : UserControl
 {
     private const double SeekTrackHorizontalInset = 10;
+    private const double SeekPreviewWidth = 64;
+    private const double SeekPreviewBottomGap = 4;
     private const double ChromeFadeInMilliseconds = 120;
     private const double ChromeFadeOutMilliseconds = 220;
     private static readonly Thickness DefaultBottomContentMargin = new(20, 8, 20, 16);
@@ -57,6 +59,7 @@ public sealed partial class PlayerOverlay : UserControl
     public event EventHandler? PlayPauseRequested;
     public event EventHandler<SeekRequestedEventArgs>? SeekRequested;
     public event EventHandler<VolumeRequestedEventArgs>? VolumeRequested;
+    public event EventHandler? MuteRequested;
     public event EventHandler? FullscreenRequested;
     public event EventHandler<TrackRequestedEventArgs>? SubtitleTrackRequested;
     public event EventHandler? SubtitleOffRequested;
@@ -102,6 +105,7 @@ public sealed partial class PlayerOverlay : UserControl
         {
             IsHitTestVisible = false;
             IsPointerWithin = false;
+            HideSeekPreview();
             StartChromeFade(0, ChromeFadeOutMilliseconds, generation);
         }
 
@@ -214,6 +218,8 @@ public sealed partial class PlayerOverlay : UserControl
 
             VolumeSlider.IsEnabled = state.HasMedia;
             VolumeSlider.Value = Clamp(state.Volume, 0, 100);
+            MuteButton.IsEnabled = state.HasMedia;
+            MuteIcon.Glyph = GetVolumeGlyph(state.IsMuted, state.Volume);
             SubtitleButton.IsEnabled = state.HasMedia;
             AudioTrackButton.IsEnabled = state.HasMedia;
 
@@ -236,6 +242,22 @@ public sealed partial class PlayerOverlay : UserControl
     private void FullscreenButton_Click(object sender, RoutedEventArgs e)
     {
         FullscreenRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void MuteButton_Click(object sender, RoutedEventArgs e)
+    {
+        MuteRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    // 静音和音量为 0 都用静音图标，其余按音量高低分三档，和系统音量图标一致。
+    private static string GetVolumeGlyph(bool isMuted, double volume)
+    {
+        if (isMuted || volume <= 0)
+        {
+            return "";
+        }
+
+        return volume < 33 ? "" : volume < 66 ? "" : "";
     }
 
     private void SubtitleButton_Click(object sender, RoutedEventArgs e)
@@ -316,6 +338,9 @@ public sealed partial class PlayerOverlay : UserControl
 
     private void SeekSlider_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
+        // 悬停预览与拖动无关，鼠标只要在条上就更新。
+        UpdateSeekPreview(e);
+
         if (!_isSeeking || _activeSeekPointerId != e.Pointer.PointerId)
         {
             return;
@@ -323,6 +348,50 @@ public sealed partial class PlayerOverlay : UserControl
 
         UpdateSeekValueFromPointer(e);
         e.Handled = true;
+    }
+
+    private void SeekSlider_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        UpdateSeekPreview(e);
+    }
+
+    private void SeekSlider_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        HideSeekPreview();
+    }
+
+    private void UpdateSeekPreview(PointerRoutedEventArgs e)
+    {
+        if (!SeekSlider.IsEnabled || _currentState.Duration <= 0)
+        {
+            HideSeekPreview();
+            return;
+        }
+
+        var pointerX = e.GetCurrentPoint(SeekSlider).Position.X;
+        SeekPreviewTime.Text = FormatTime(_currentState.Duration * GetSeekRatioFromPointerX(pointerX));
+
+        // BottomContent 的左边距正好是 SeekSlider 相对 OverlayRoot 的水平偏移，
+        // 它已经含了视频黑边内缩，所以预览能跟着控件一起对齐画面。
+        var centerX = _lastBottomContentMargin.Left + pointerX;
+        var maxLeft = Math.Max(0, OverlayRoot.ActualWidth - SeekPreviewWidth);
+        SeekPreview.Margin = new Thickness(
+            Clamp(centerX - (SeekPreviewWidth / 2), 0, maxLeft),
+            0,
+            0,
+            SeekPreviewBottomGap);
+        SeekPreview.Visibility = Visibility.Visible;
+    }
+
+    private void HideSeekPreview()
+    {
+        SeekPreview.Visibility = Visibility.Collapsed;
+    }
+
+    private double GetSeekRatioFromPointerX(double pointerX)
+    {
+        var trackWidth = Math.Max(1, SeekSlider.ActualWidth - (SeekTrackHorizontalInset * 2));
+        return Clamp((pointerX - SeekTrackHorizontalInset) / trackWidth, 0, 1);
     }
 
     private void SeekSlider_PointerReleased(object sender, PointerRoutedEventArgs e)
@@ -376,9 +445,7 @@ public sealed partial class PlayerOverlay : UserControl
 
     private void UpdateSeekValueFromPointer(PointerRoutedEventArgs e)
     {
-        var trackWidth = Math.Max(1, SeekSlider.ActualWidth - (SeekTrackHorizontalInset * 2));
-        var pointerX = e.GetCurrentPoint(SeekSlider).Position.X - SeekTrackHorizontalInset;
-        var ratio = Clamp(pointerX / trackWidth, 0, 1);
+        var ratio = GetSeekRatioFromPointerX(e.GetCurrentPoint(SeekSlider).Position.X);
         SeekSlider.Value = SeekSlider.Minimum + ((SeekSlider.Maximum - SeekSlider.Minimum) * ratio);
     }
 

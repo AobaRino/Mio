@@ -183,6 +183,27 @@
             </Grid>
         </Grid>
 
+        <Border
+            x:Name="SeekPreview"
+            Grid.Row="1"
+            Width="64"
+            Padding="0,3"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Bottom"
+            Background="#E6141414"
+            BorderBrush="#22FFFFFF"
+            BorderThickness="1"
+            CornerRadius="4"
+            IsHitTestVisible="False"
+            Visibility="Collapsed">
+            <TextBlock
+                x:Name="SeekPreviewTime"
+                HorizontalAlignment="Center"
+                FontSize="12"
+                Foreground="{StaticResource MioOverlayIconBrush}"
+                Text="0:00" />
+        </Border>
+
         <Grid
             x:Name="BottomOverlay"
             Grid.Row="2"
@@ -217,6 +238,8 @@
                     IsThumbToolTipEnabled="False"
                     Maximum="1"
                     Minimum="0"
+                    PointerEntered="SeekSlider_PointerEntered"
+                    PointerExited="SeekSlider_PointerExited"
                     ValueChanged="SeekSlider_ValueChanged" />
 
                 <Grid
@@ -275,14 +298,14 @@
                         x:Name="RightControls"
                         Grid.Column="3"
                         Height="44"
-                        Width="244"
+                        Width="254"
                         HorizontalAlignment="Right"
                         VerticalAlignment="Center">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="38" />
                             <ColumnDefinition Width="38" />
-                            <ColumnDefinition Width="24" />
-                            <ColumnDefinition Width="90" />
+                            <ColumnDefinition Width="38" />
+                            <ColumnDefinition Width="86" />
                             <ColumnDefinition Width="14" />
                             <ColumnDefinition Width="40" />
                         </Grid.ColumnDefinitions>
@@ -315,21 +338,25 @@
                                 Glyph="&#xE8D6;" />
                         </Button>
 
-                        <FontIcon
+                        <Button
+                            x:Name="MuteButton"
                             Grid.Column="2"
-                            Width="16"
-                            Height="16"
-                            HorizontalAlignment="Center"
                             VerticalAlignment="Center"
-                            FontFamily="Segoe MDL2 Assets"
-                            FontSize="14"
-                            Foreground="{StaticResource MioOverlayMutedBrush}"
-                            Glyph="&#xE767;" />
+                            Click="MuteButton_Click"
+                            Style="{StaticResource MioIconButtonStyle}"
+                            ToolTipService.ToolTip="Mute">
+                            <FontIcon
+                                x:Name="MuteIcon"
+                                FontFamily="Segoe MDL2 Assets"
+                                FontSize="14"
+                                Foreground="{StaticResource MioOverlayIconBrush}"
+                                Glyph="&#xE767;" />
+                        </Button>
 
                         <Slider
                             x:Name="VolumeSlider"
                             Grid.Column="3"
-                            Width="90"
+                            Width="86"
                             Height="24"
                             MinWidth="0"
                             MinHeight="24"

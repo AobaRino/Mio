@@ -55,6 +55,7 @@ public sealed partial class MainWindow : Window
         Overlay.PlayPauseRequested += (_, _) => _player.TogglePause();
         Overlay.SeekRequested += (_, e) => _player.SeekAbsolute(e.Position);
         Overlay.VolumeRequested += (_, e) => _player.SetVolume(e.Volume);
+        Overlay.MuteRequested += (_, _) => _player.ToggleMute();
         Overlay.FullscreenRequested += (_, _) => ToggleFullscreen();
         Overlay.SubtitleTrackRequested += (_, e) => _player.SelectSubtitleTrack(e.TrackId);
         Overlay.SubtitleOffRequested += (_, _) => _player.DisableSubtitles();
@@ -179,6 +180,11 @@ public sealed partial class MainWindow : Window
                 break;
             case VirtualKey.Down:
                 _player.SetVolume(_lastState.Volume - InputService.VolumeStep);
+                ShowOverlay();
+                e.Handled = true;
+                break;
+            case VirtualKey.M:
+                _player.ToggleMute();
                 ShowOverlay();
                 e.Handled = true;
                 break;
