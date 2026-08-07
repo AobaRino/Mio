@@ -17,6 +17,8 @@ public static class MpvProperty
     public const string EofReached = "eof-reached";
     public const string MediaTitle = "media-title";
     public const string TrackListCount = "track-list/count";
+    public const string CurrentAudioTrackId = "current-tracks/audio/id";
+    public const string CurrentSubtitleTrackId = "current-tracks/sub/id";
     public const string Aid = "aid";
     public const string Sid = "sid";
     public const string SubVisibility = "sub-visibility";

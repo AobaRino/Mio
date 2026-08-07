@@ -5,7 +5,7 @@
     xmlns:controls="using:Mio.Controls"
     Title="Mio">
 
-    <Grid
+    <controls:CursorAwareGrid
         x:Name="RootGrid"
         AllowDrop="True"
         Background="#050505"
@@ -54,5 +54,5 @@
         </Grid>
 
         <controls:PlayerOverlay x:Name="Overlay" />
-    </Grid>
+    </controls:CursorAwareGrid>
 </Window>

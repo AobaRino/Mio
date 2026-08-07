@@ -17,6 +17,52 @@ internal enum MpvFormat
     ByteArray = 9
 }
 
+internal enum MpvEventId
+{
+    None = 0,
+    Shutdown = 1,
+    LogMessage = 2,
+    StartFile = 6,
+    EndFile = 7,
+    FileLoaded = 8
+}
+
+internal enum MpvEndFileReason
+{
+    Eof = 0,
+    Stop = 2,
+    Quit = 3,
+    Error = 4,
+    Redirect = 5
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct MpvEvent
+{
+    public MpvEventId EventId;
+    public int Error;
+    public ulong ReplyUserData;
+    public IntPtr Data;
+}
+
+// 只声明 mpv_event_end_file 开头这两个字段。后续字段（playlist_entry_id 等）
+// 是较新 client API 才追加的，不读就不会因 libmpv 版本差异读到越界内存。
+[StructLayout(LayoutKind.Sequential)]
+internal struct MpvEventEndFile
+{
+    public int Reason;
+    public int Error;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct MpvEventLogMessage
+{
+    public IntPtr Prefix;
+    public IntPtr Level;
+    public IntPtr Text;
+    public int LogLevel;
+}
+
 internal static class MpvNative
 {
     private const string LibraryName = "libmpv-2.dll";
@@ -62,6 +108,17 @@ internal static class MpvNative
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "mpv_free")]
     private static extern void NativeFree(IntPtr data);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "mpv_wait_event")]
+    private static extern IntPtr NativeWaitEvent(IntPtr handle, double timeout);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "mpv_wakeup")]
+    private static extern void NativeWakeup(IntPtr handle);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "mpv_request_log_messages")]
+    private static extern int NativeRequestLogMessages(
+        IntPtr handle,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string minLevel);
 
     public static IntPtr Create()
     {
@@ -123,30 +180,19 @@ internal static class MpvNative
         return value is not null;
     }
 
-    public static bool TrySetPropertyString(IntPtr handle, string name, string value)
-    {
-        return SetPropertyString(handle, name, value) >= 0;
-    }
-
     public static bool TryGetFlag(IntPtr handle, string name, out bool value)
     {
-        value = false;
-        var result = TryGetFlagWithResult(handle, name, out value);
-        return result >= 0;
+        return TryGetFlagWithResult(handle, name, out value) >= 0;
     }
 
     public static bool TryGetDouble(IntPtr handle, string name, out double value)
     {
-        value = 0;
-        var result = TryGetDoubleWithResult(handle, name, out value);
-        return result >= 0;
+        return TryGetDoubleWithResult(handle, name, out value) >= 0;
     }
 
     public static bool TryGetInt64(IntPtr handle, string name, out long value)
     {
-        value = 0;
-        var result = TryGetInt64WithResult(handle, name, out value);
-        return result >= 0;
+        return TryGetInt64WithResult(handle, name, out value) >= 0;
     }
 
     public static int TryGetFlagWithResult(IntPtr handle, string name, out bool value)
@@ -247,6 +293,42 @@ internal static class MpvNative
                 }
             }
         }
+    }
+
+    // 返回的 mpv_event 内存归 libmpv 所有，只在同一线程下次调用 WaitEvent 前有效，
+    // 所以事件（含 Data 指向的负载）必须在当次循环里解析完。
+    public static MpvEvent? WaitEvent(IntPtr handle, double timeoutSeconds)
+    {
+        var ptr = NativeWaitEvent(handle, timeoutSeconds);
+        return ptr == IntPtr.Zero ? null : Marshal.PtrToStructure<MpvEvent>(ptr);
+    }
+
+    public static void Wakeup(IntPtr handle)
+    {
+        NativeWakeup(handle);
+    }
+
+    public static int RequestLogMessages(IntPtr handle, string minLevel)
+    {
+        return NativeRequestLogMessages(handle, minLevel);
+    }
+
+    public static MpvEventEndFile ReadEndFile(IntPtr data)
+    {
+        return data == IntPtr.Zero ? default : Marshal.PtrToStructure<MpvEventEndFile>(data);
+    }
+
+    public static string? ReadLogMessage(IntPtr data)
+    {
+        if (data == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        var message = Marshal.PtrToStructure<MpvEventLogMessage>(data);
+        var prefix = Marshal.PtrToStringUTF8(message.Prefix);
+        var text = Marshal.PtrToStringUTF8(message.Text)?.TrimEnd('\n', '\r');
+        return string.IsNullOrWhiteSpace(text) ? null : $"{prefix}: {text}";
     }
 
     public static string ErrorString(int error)

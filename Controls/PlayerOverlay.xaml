@@ -164,7 +164,7 @@
             </Grid.Background>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="150" />
+                <ColumnDefinition x:Name="CaptionButtonColumn" Width="150" />
             </Grid.ColumnDefinitions>
 
             <Grid

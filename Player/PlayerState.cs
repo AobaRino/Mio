@@ -80,4 +80,21 @@ public sealed class PlayerState
     {
         return (PlayerState)MemberwiseClone();
     }
+
+    // 切换文件时只保留播放器级设置，其余全部回到未知状态，避免新文件就绪前
+    // overlay 仍在显示上一个文件的时长、轨道和宽高比。这里显式列出的是要
+    // 保留的字段，新增字段默认会被重置。
+    public PlayerState CloneForNewMedia(string path, string title)
+    {
+        return new PlayerState
+        {
+            CurrentFile = path,
+            MediaTitle = title,
+            HasMedia = true,
+            IsIdleActive = false,
+            IsPaused = IsPaused,
+            Volume = Volume,
+            IsFullscreen = IsFullscreen
+        };
+    }
 }

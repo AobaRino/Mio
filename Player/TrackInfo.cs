@@ -23,8 +23,6 @@ public sealed class TrackInfo
 
     public string? Codec { get; set; }
 
-    public bool IsSelected { get; set; }
-
     public bool IsExternal { get; set; }
 
     public bool IsDefault { get; set; }

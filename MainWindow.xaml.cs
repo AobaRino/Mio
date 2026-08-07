@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,20 +21,15 @@ namespace Mio;
 
 public sealed partial class MainWindow : Window
 {
-    private const int SwapChainBindMaxAttempts = 20;
-    private static readonly TimeSpan SwapChainBindRetryDelay = TimeSpan.FromMilliseconds(100);
-
     private readonly MpvPlayer _player = new();
     private readonly FullscreenService _fullscreenService;
+    private readonly SwapChainBinder _swapChainBinder;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _overlayHideTimer;
     private readonly IntPtr _hwnd;
 
     private CancellationTokenSource? _loadCancellation;
-    private CancellationTokenSource? _swapChainBindCancellation;
-    private IntPtr _boundSwapChain;
     private PlayerState _lastState = PlayerState.CreateIdle();
     private long _loadGeneration;
-    private long _swapChainBindGeneration;
     private int _swapChainRecoveryAttempts;
     private bool _hasVisibleError;
     private bool _isRecoveringSwapChain;
@@ -47,6 +41,9 @@ public sealed partial class MainWindow : Window
         _hwnd = WindowNative.GetWindowHandle(this);
         _fullscreenService = new FullscreenService(this);
         _fullscreenService.FullscreenChanged += OnFullscreenChanged;
+
+        _swapChainBinder = new SwapChainBinder(VideoPanel, UpdateCompositionSizeFromPanel);
+        _swapChainBinder.Completed += OnSwapChainBindCompleted;
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(Overlay.TitleDragArea);
@@ -304,7 +301,7 @@ public sealed partial class MainWindow : Window
         _loadCancellation = cancellation;
         previousCancellation?.Cancel();
         previousCancellation?.Dispose();
-        CancelSwapChainBinding();
+        _swapChainBinder.Cancel();
 
         ClearError();
         ShowOverlay();
@@ -396,114 +393,37 @@ public sealed partial class MainWindow : Window
 
     private void OnSwapChainChanged(IntPtr swapChain)
     {
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            StartSwapChainBinding(swapChain);
-        });
+        DispatcherQueue.TryEnqueue(() => _swapChainBinder.Bind(swapChain));
     }
 
-    private void StartSwapChainBinding(IntPtr swapChain)
+    private async void OnSwapChainBindCompleted(SwapChainBindOutcome outcome)
     {
-        if (swapChain == IntPtr.Zero || swapChain == _boundSwapChain)
+        switch (outcome.Status)
+        {
+            case SwapChainBindStatus.Bound:
+                _swapChainRecoveryAttempts = 0;
+                ClearError();
+                UpdateCompositionSizeFromPanel();
+                UpdateOverlayViewportInsets();
+                return;
+
+            case SwapChainBindStatus.InterfaceUnavailable:
+                ShowError("SwapChainPanel native interop failed: ISwapChainPanelNative not available. Check WinUI 3 dxinterop GUID/interface.");
+                return;
+        }
+
+        if (outcome.CanRecoverByReload && await TryRecoverSwapChainBindingAsync())
         {
             return;
         }
 
-        CancelSwapChainBinding();
-        var cancellation = new CancellationTokenSource();
-        _swapChainBindCancellation = cancellation;
-        var generation = _swapChainBindGeneration;
-        _ = BindSwapChainAsync(swapChain, generation, cancellation.Token);
+        ShowError($"SetSwapChain failed: HRESULT {ComHelpers.FormatHResult(outcome.HResult)}");
     }
 
-    private async Task BindSwapChainAsync(IntPtr swapChain, long generation, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var hr = 0;
-            var clearedPreviousSwapChain = false;
-            for (var attempt = 1; attempt <= SwapChainBindMaxAttempts; attempt++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!IsCurrentSwapChainBinding(generation, cancellationToken))
-                {
-                    return;
-                }
-
-                if (!VideoPanel.IsLoaded || VideoPanel.ActualWidth <= 0 || VideoPanel.ActualHeight <= 0)
-                {
-                    Debug.WriteLine($"[Mio.WinUI] SetSwapChain attempt {attempt} delayed: panel not ready");
-                    await Task.Delay(SwapChainBindRetryDelay, cancellationToken);
-                    continue;
-                }
-
-                if (!clearedPreviousSwapChain && _boundSwapChain != IntPtr.Zero)
-                {
-                    var clearHr = SwapChainPanelInterop.SetSwapChain(VideoPanel, IntPtr.Zero);
-                    Debug.WriteLine($"[Mio.WinUI] clear previous SwapChain result={ComHelpers.FormatHResult(clearHr)}");
-                    _boundSwapChain = IntPtr.Zero;
-                    clearedPreviousSwapChain = true;
-                }
-
-                UpdateCompositionSizeFromPanel();
-                hr = SwapChainPanelInterop.SetSwapChain(VideoPanel, swapChain);
-                Debug.WriteLine($"[Mio.WinUI] SetSwapChain attempt={attempt} generation={generation} result={ComHelpers.FormatHResult(hr)}");
-                if (!ComHelpers.Failed(hr))
-                {
-                    Debug.WriteLine($"[Mio.WinUI] SetSwapChain success ptr=0x{swapChain.ToInt64():X} HRESULT {ComHelpers.FormatHResult(hr)}");
-                    _boundSwapChain = swapChain;
-                    _swapChainRecoveryAttempts = 0;
-                    ClearError();
-                    UpdateCompositionSizeFromPanel();
-                    UpdateOverlayViewportInsets();
-                    return;
-                }
-
-                if (hr != unchecked((int)0x80004005))
-                {
-                    break;
-                }
-
-                await Task.Delay(SwapChainBindRetryDelay, cancellationToken);
-            }
-
-            if (!IsCurrentSwapChainBinding(generation, cancellationToken))
-            {
-                return;
-            }
-
-            if (hr == unchecked((int)0x80004005) &&
-                await TryRecoverSwapChainBindingAsync(generation, cancellationToken))
-            {
-                return;
-            }
-
-            if (!IsCurrentSwapChainBinding(generation, cancellationToken))
-            {
-                return;
-            }
-
-            if (hr == unchecked((int)0x80004002))
-            {
-                ShowError("SwapChainPanel native interop failed: ISwapChainPanelNative not available. Check WinUI 3 dxinterop GUID/interface.");
-                return;
-            }
-
-            ShowError($"SetSwapChain failed: HRESULT {ComHelpers.FormatHResult(hr)}");
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            Debug.WriteLine($"[Mio.WinUI] SetSwapChain canceled generation={generation}");
-        }
-    }
-
-    private async Task<bool> TryRecoverSwapChainBindingAsync(long generation, CancellationToken cancellationToken)
+    private async Task<bool> TryRecoverSwapChainBindingAsync()
     {
         var currentFile = _lastState.CurrentFile;
-        if (!IsCurrentSwapChainBinding(generation, cancellationToken) ||
-            _isRecoveringSwapChain ||
-            _swapChainRecoveryAttempts >= 1 ||
-            string.IsNullOrWhiteSpace(currentFile))
+        if (_isRecoveringSwapChain || _swapChainRecoveryAttempts >= 1 || string.IsNullOrWhiteSpace(currentFile))
         {
             return false;
         }
@@ -526,19 +446,6 @@ public sealed partial class MainWindow : Window
         {
             _isRecoveringSwapChain = false;
         }
-    }
-
-    private bool IsCurrentSwapChainBinding(long generation, CancellationToken cancellationToken)
-    {
-        return !cancellationToken.IsCancellationRequested && generation == _swapChainBindGeneration;
-    }
-
-    private void CancelSwapChainBinding()
-    {
-        _swapChainBindGeneration++;
-        _swapChainBindCancellation?.Cancel();
-        _swapChainBindCancellation?.Dispose();
-        _swapChainBindCancellation = null;
     }
 
     private void OnFullscreenChanged(bool isFullscreen)
@@ -636,8 +543,8 @@ public sealed partial class MainWindow : Window
 
     private void ShowOverlay()
     {
-        Overlay.Opacity = 1;
-        Overlay.IsHitTestVisible = true;
+        Overlay.ShowChrome();
+        RootGrid.SetCursorVisible(true);
         _overlayHideTimer.Stop();
         _overlayHideTimer.Start();
     }
@@ -649,8 +556,8 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        Overlay.Opacity = 0;
-        Overlay.IsHitTestVisible = false;
+        Overlay.HideChrome();
+        RootGrid.SetCursorVisible(false);
     }
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
@@ -660,20 +567,8 @@ public sealed partial class MainWindow : Window
         _loadCancellation?.Cancel();
         _loadCancellation?.Dispose();
         _loadCancellation = null;
-        CancelSwapChainBinding();
-
-        try
-        {
-            if (_boundSwapChain != IntPtr.Zero)
-            {
-                _ = SwapChainPanelInterop.SetSwapChain(VideoPanel, IntPtr.Zero);
-                _boundSwapChain = IntPtr.Zero;
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[Mio.WinUI] SetSwapChain clear failed: {ex.Message}");
-        }
+        _swapChainBinder.Cancel();
+        _swapChainBinder.Clear();
 
         _player.Dispose();
         Debug.WriteLine("[Mio.WinUI] dispose complete");

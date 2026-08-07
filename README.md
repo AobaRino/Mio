@@ -35,9 +35,18 @@ Native/libmpv-2.dll
 ## 运行
 
 ```powershell
-dotnet build
 dotnet run
 ```
+
+默认配置是 `Debug`。排查播放链路问题时必须用 Debug 配置：项目里的 `[Mio.WinUI]` 诊断日志（swapchain 绑定 HRESULT、`d3d11-composition-size` 同步、`display-swapchain` 探测、mpv 命令返回值）走 `Debug.WriteLine`，在 Release 下会被整体编译移除。
+
+发布构建：
+
+```powershell
+dotnet publish -c Release
+```
+
+Release 会启用 ReadyToRun 并移除上述诊断日志。发布配置只在 `Properties/PublishProfiles/win-x64.pubxml` 描述输出方式，不再硬编码 `Configuration`，所以构建配置一律由命令行 `-c` 决定。
 
 当前项目固定 x64，使用 `net10.0-windows10.0.19041.0` 和 `Microsoft.WindowsAppSDK 1.5.240627000`。
 
