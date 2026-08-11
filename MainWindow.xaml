@@ -23,7 +23,11 @@
             Loaded="VideoPanel_Loaded"
             SizeChanged="VideoPanel_SizeChanged" />
 
-        <Grid x:Name="IdleLayer" IsHitTestVisible="False">
+        <!-- 不透明背景：首帧就绪前盖住 SwapChainPanel，避免露出未初始化的 back buffer -->
+        <Grid
+            x:Name="IdleLayer"
+            Background="#050505"
+            IsHitTestVisible="False">
             <StackPanel
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"

@@ -1,11 +1,11 @@
 using System;
-using System.Diagnostics;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Mio.Interop;
 using Windows.Graphics;
 using WinRT.Interop;
+using static Mio.Diagnostics.MioLog;
 
 namespace Mio.Services;
 
@@ -22,7 +22,7 @@ public sealed class FullscreenService
 
     private OverlappedPresenterState _stateBeforeFullscreen = OverlappedPresenterState.Restored;
     private RectInt32 _boundsBeforeFullscreen;
-    private bool _wasResizableBeforeFullscreen = true;
+    private long _styleBeforeFullscreen;
 
     public FullscreenService(Window window)
     {
@@ -66,18 +66,17 @@ public sealed class FullscreenService
         var displayArea = DisplayArea.GetFromWindowId(_windowId, DisplayAreaFallback.Nearest);
         var bounds = displayArea.OuterBounds;
 
-        // 必须先关掉 IsResizable：可调整大小的窗口一定保留 WS_THICKFRAME，
-        // 那条 resize border 会占掉客户区（实测每边 7px），视频就铺不满屏。
-        _wasResizableBeforeFullscreen = presenter.IsResizable;
-        presenter.IsResizable = false;
-        presenter.SetBorderAndTitleBar(false, false);
-        NativeMethods.ApplyFrameChange(_hwnd);
+        // 不走 presenter 的 SetBorderAndTitleBar / IsResizable：它们的效果已被
+        // WS_POPUP 完全覆盖，多调一次只是多一帧「旧尺寸 + 新样式」的重绘，
+        // 表现为切换全屏时边框一闪。样式和尺寸合并成一次 SetWindowPos 生效。
+        _styleBeforeFullscreen = NativeMethods.ApplyBorderlessFullscreenStyle(_hwnd);
         SetDwmBorderVisible(false);
-        _appWindow.MoveAndResize(bounds);
+        NativeMethods.SetWindowBounds(_hwnd, bounds.X, bounds.Y, bounds.Width, bounds.Height);
 
         IsFullscreen = true;
         Log($"fullscreen enter (restore to {_stateBeforeFullscreen}) display={bounds.Width}x{bounds.Height} " +
-            $"window={_appWindow.Size.Width}x{_appWindow.Size.Height} pos={_appWindow.Position.X},{_appWindow.Position.Y}");
+            $"window={_appWindow.Size.Width}x{_appWindow.Size.Height} pos={_appWindow.Position.X},{_appWindow.Position.Y} " +
+            $"style=0x{_styleBeforeFullscreen:X8}->0x{NativeMethods.GetWindowStyle(_hwnd):X8}");
         FullscreenChanged?.Invoke(true);
     }
 
@@ -88,18 +87,27 @@ public sealed class FullscreenService
             return;
         }
 
-        presenter.SetBorderAndTitleBar(true, true);
-        presenter.IsResizable = _wasResizableBeforeFullscreen;
-        NativeMethods.ApplyFrameChange(_hwnd);
+        NativeMethods.SetWindowStyle(_hwnd, _styleBeforeFullscreen);
         SetDwmBorderVisible(true);
 
+        // 还原样式后必须 FRAMECHANGED 才会生效，两条分支都要覆盖到。
         if (_stateBeforeFullscreen == OverlappedPresenterState.Maximized)
         {
+            NativeMethods.ApplyFrameChange(_hwnd);
             presenter.Maximize();
         }
         else if (_boundsBeforeFullscreen.Width > 0 && _boundsBeforeFullscreen.Height > 0)
         {
-            _appWindow.MoveAndResize(_boundsBeforeFullscreen);
+            NativeMethods.SetWindowBounds(
+                _hwnd,
+                _boundsBeforeFullscreen.X,
+                _boundsBeforeFullscreen.Y,
+                _boundsBeforeFullscreen.Width,
+                _boundsBeforeFullscreen.Height);
+        }
+        else
+        {
+            NativeMethods.ApplyFrameChange(_hwnd);
         }
 
         IsFullscreen = false;
@@ -112,10 +120,5 @@ public sealed class FullscreenService
         var color = visible ? NativeMethods.DwmBorderColorDefault : NativeMethods.DwmBorderColorNone;
         var hr = NativeMethods.DwmSetWindowAttribute(_hwnd, NativeMethods.DwmwaBorderColor, ref color, sizeof(uint));
         Log($"dwm border={(visible ? "default" : "none")} result=0x{hr:X8}");
-    }
-
-    private static void Log(string message)
-    {
-        Debug.WriteLine($"[Mio.WinUI] {message}");
     }
 }

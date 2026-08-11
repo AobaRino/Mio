@@ -190,7 +190,8 @@ public sealed partial class PlayerOverlay : UserControl
         _lastBottomContentMargin = margin;
     }
 
-    public void ApplyState(PlayerState state)
+    // isFullscreen 单独传：那是窗口状态，不属于播放器状态模型。
+    public void ApplyState(PlayerState state, bool isFullscreen)
     {
         _currentState = state;
         _suppressUpdates = true;
@@ -223,9 +224,9 @@ public sealed partial class PlayerOverlay : UserControl
             SubtitleButton.IsEnabled = state.HasMedia;
             AudioTrackButton.IsEnabled = state.HasMedia;
 
-            FullscreenIcon.Glyph = state.IsFullscreen ? "\uE73F" : "\uE740";
-            UpdateCaptionButtonColumn(state.IsFullscreen);
-            UpdateChromeCollapsePolicy(state.IsFullscreen);
+            FullscreenIcon.Glyph = isFullscreen ? "\uE73F" : "\uE740";
+            UpdateCaptionButtonColumn(isFullscreen);
+            UpdateChromeCollapsePolicy(isFullscreen);
             UpdateProgressTimer();
         }
         finally

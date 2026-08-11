@@ -48,7 +48,7 @@ dotnet publish -c Release
 
 Release 会启用 ReadyToRun 并移除上述诊断日志。发布配置只在 `Properties/PublishProfiles/win-x64.pubxml` 描述输出方式，不再硬编码 `Configuration`，所以构建配置一律由命令行 `-c` 决定。
 
-当前项目固定 x64，使用 `net10.0-windows10.0.19041.0` 和 `Microsoft.WindowsAppSDK 1.5.240627000`。
+当前项目固定 x64，使用 `net10.0-windows10.0.26100.0` 和 `Microsoft.WindowsAppSDK 2.3.1`。`TargetPlatformMinVersion` 保持 `10.0.17763.0`，TFM 的 Windows 版本只决定编译期可用的 WinRT API，不抬高运行所需的系统版本。
 
 启动后将视频文件拖入窗口即可播放。第一版目标功能包括播放/暂停、进度显示、拖动 seek、音量调节、双击全屏、Esc 退出全屏、方向键 seek/调音量、resize/maximize/fullscreen 后同步 D3D11 composition size。
 
@@ -65,6 +65,19 @@ Release 会启用 ReadyToRun 并移除上述诊断日志。发布配置只在 `P
 Mio 支持读取 mpv `track-list` 中的字幕轨道和音轨，并通过底部 overlay 的轻量菜单切换。字幕菜单支持关闭字幕、自动选择字幕、切换内嵌字幕轨道，以及加载外部 `.srt` / `.ass` / `.ssa` / `.vtt` 字幕文件；音轨菜单支持切换当前视频内的音轨。
 
 字幕由 mpv 原生字幕渲染管线合成到视频输出中，Mio 不使用 XAML 解析或绘制字幕。当前暂不提供字幕样式设置、字幕下载、音频 passthrough UI 或复杂轨道设置页。
+
+## 维护注记：升级 WindowsAppSDK 时的回归清单
+
+窗口层重度依赖 WinUI 未文档化的行为，大版本升级时以下三处**必须实机回归**，编译通过说明不了任何问题（`1.5 → 2.3.1` 那次共触发 4 个回归，全部集中在这里）：
+
+- **全屏**：边框残留、任务栏是否让位、全屏时能否被拖走、退出后能否回到进入前的窗口/最大化状态。当前实现走纯 Win32（`WS_POPUP` + 一次性 `SetWindowPos`），刻意不依赖 `OverlappedPresenter`——`SetBorderAndTitleBar` / `IsResizable` 究竟清掉哪些样式位，1.5 与 2.3 并不一致。
+- **标题栏**：`SetTitleBar(null)` 不等于禁用拖动。extend 模式下 WinUI 会回退到默认拖动区，全屏必须连 `ExtendsContentIntoTitleBar` 一起关，否则全屏窗口仍可被拖走。
+- **SwapChainPanel 绑定**：`ISwapChainPanelNative` 属内部 interop，GUID 与行为都可能变。看日志里的 `QueryInterface ISwapChainPanelNative` 和 `SetSwapChain success`。
+
+另有两处与版本无关、但容易在改动窗口逻辑时复发：
+
+- 窗口类背景刷必须是深色。窗口尺寸变化时 XAML 布局会慢一帧，那一帧露出的是窗口类背景，系统默认白色，表现为切换全屏时闪白边。
+- `display-swapchain` 指针可用只代表 swapchain 被创建，此时 mpv 可能尚未 Present，back buffer 里是未初始化内容。必须等 `playback-restart` 事件再收起 `IdleLayer`，否则首次加载会闪一下白屏。
 
 ## 当前限制
 

@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using static Mio.Diagnostics.MioLog;
 
 namespace Mio.Player;
 
@@ -29,6 +30,10 @@ public sealed class MpvPlayer : IMediaPlayer
     private const int MaxRecentLogErrors = 5;
     private const double EventWaitSeconds = 1.0;
     private static readonly TimeSpan BackgroundShutdownTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan StatePollInterval = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan SwapChainWaitTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SwapChainPollInterval = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan SwapChainDiagnosticInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly object _sync = new();
     private readonly object _errorSync = new();
@@ -49,7 +54,7 @@ public sealed class MpvPlayer : IMediaPlayer
     private IntPtr _lastSwapChain;
     private int _lastCompositionWidth;
     private int _lastCompositionHeight;
-    private bool _loadFileSubmitted;
+    private bool _videoReady;
     private bool _initialized;
     private bool _disposed;
 
@@ -124,14 +129,13 @@ public sealed class MpvPlayer : IMediaPlayer
         lock (_sync)
         {
             Log($"loadfile path={fullPath}");
-            _loadFileSubmitted = false;
             var result = MpvNative.Command(_handle, MpvCommand.LoadFile(fullPath));
             Log($"loadfile result={DescribeResult(result)}");
             MpvNative.ThrowIfError(result, "loadfile");
 
             _currentFile = fullPath;
             _lastSwapChain = IntPtr.Zero;
-            _loadFileSubmitted = result >= 0;
+            _videoReady = false;
             ResetTrackCacheLocked();
             _state = _state.CloneForNewMedia(fullPath, Path.GetFileName(fullPath));
             snapshot = _state.Clone();
@@ -191,7 +195,13 @@ public sealed class MpvPlayer : IMediaPlayer
 
     public void ToggleMute()
     {
-        TrySetProperty(MpvProperty.Mute, State.IsMuted ? "no" : "yes", "toggle mute");
+        var state = State;
+        if (!state.HasMedia)
+        {
+            return;
+        }
+
+        TrySetProperty(MpvProperty.Mute, state.IsMuted ? "no" : "yes", "toggle mute");
         PublishStateSnapshot();
     }
 
@@ -480,8 +490,29 @@ public sealed class MpvPlayer : IMediaPlayer
                 case MpvEventId.FileLoaded:
                     Log("event file-loaded");
                     break;
+                case MpvEventId.PlaybackRestart:
+                    HandlePlaybackRestart();
+                    break;
             }
         }
+    }
+
+    // playback-restart 表示 mpv 已经就绪并会开始输出画面。在此之前 swapchain 虽然
+    // 已创建，back buffer 里却还是未初始化内容，直接显示会闪一下白屏。
+    private void HandlePlaybackRestart()
+    {
+        lock (_sync)
+        {
+            if (_videoReady)
+            {
+                return;
+            }
+
+            _videoReady = true;
+        }
+
+        Log("event playback-restart");
+        PublishStateSnapshot();
     }
 
     private void HandleLogMessage(IntPtr data)
@@ -567,7 +598,7 @@ public sealed class MpvPlayer : IMediaPlayer
     private async Task WaitForDisplaySwapChainAsync(long mediaGeneration, CancellationToken cancellationToken)
     {
         Log("waiting display-swapchain");
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        var deadline = DateTimeOffset.UtcNow.Add(SwapChainWaitTimeout);
         var nextDiagnostic = DateTimeOffset.MinValue;
         var diagnostics = new DisplaySwapChainDiagnostics();
 
@@ -583,24 +614,33 @@ public sealed class MpvPlayer : IMediaPlayer
                 throw new MpvException(loadError);
             }
 
-            IntPtr swapChain = IntPtr.Zero;
+            // 循环本身只需要 display-swapchain 一个属性；那一整套诊断字段只喂给
+            // 限流后的日志，按诊断节奏读就够，不必每轮都读。
+            var wantDiagnostic = DateTimeOffset.UtcNow >= nextDiagnostic;
+
+            IntPtr swapChain;
             PlayerState snapshot;
             var changed = false;
 
             lock (_sync)
             {
-                diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
-
-                if (diagnostics.SwapChainPointer != IntPtr.Zero)
+                if (wantDiagnostic)
                 {
+                    diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
                     swapChain = diagnostics.SwapChainPointer;
-                    if (swapChain != _lastSwapChain)
-                    {
-                        _lastSwapChain = swapChain;
-                        _state = _state.Clone();
-                        _state.IsSwapChainReady = true;
-                        changed = true;
-                    }
+                }
+                else
+                {
+                    swapChain = ReadDisplaySwapChainPointerLocked();
+                }
+
+                if (swapChain != IntPtr.Zero && swapChain != _lastSwapChain)
+                {
+                    _lastSwapChain = swapChain;
+                    var next = _state.Clone();
+                    next.IsSwapChainReady = true;
+                    _state = next;
+                    changed = true;
                 }
 
                 snapshot = _state.Clone();
@@ -608,7 +648,7 @@ public sealed class MpvPlayer : IMediaPlayer
 
             if (swapChain != IntPtr.Zero)
             {
-                Log($"display-swapchain result={diagnostics.SwapChainResult} raw={diagnostics.SwapChainRaw} ptr=0x{swapChain.ToInt64():X}");
+                Log($"display-swapchain ready ptr=0x{swapChain.ToInt64():X}");
                 if (changed)
                 {
                     StateChanged?.Invoke(snapshot);
@@ -618,13 +658,13 @@ public sealed class MpvPlayer : IMediaPlayer
                 return;
             }
 
-            if (DateTimeOffset.UtcNow >= nextDiagnostic)
+            if (wantDiagnostic)
             {
                 Log(diagnostics.ToLogLine());
-                nextDiagnostic = DateTimeOffset.UtcNow.AddMilliseconds(250);
+                nextDiagnostic = DateTimeOffset.UtcNow.Add(SwapChainDiagnosticInterval);
             }
 
-            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(SwapChainPollInterval, cancellationToken).ConfigureAwait(false);
         }
 
         var timeoutLoadError = TryGetLoadError(mediaGeneration);
@@ -643,12 +683,23 @@ public sealed class MpvPlayer : IMediaPlayer
         throw new MpvException(AppendRecentLogErrors(diagnostics.ToTimeoutMessage()));
     }
 
+    private IntPtr ReadDisplaySwapChainPointerLocked()
+    {
+        if (!_initialized || _handle == IntPtr.Zero)
+        {
+            return IntPtr.Zero;
+        }
+
+        return MpvNative.TryGetInt64(_handle, MpvProperty.DisplaySwapChain, out var raw) && raw != 0
+            ? new IntPtr(raw)
+            : IntPtr.Zero;
+    }
+
     private DisplaySwapChainDiagnostics ReadDisplaySwapChainDiagnosticsLocked()
     {
         var diagnostics = new DisplaySwapChainDiagnostics
         {
             CurrentFile = _currentFile,
-            LoadFileOk = _loadFileSubmitted,
             CompositionWidth = _lastCompositionWidth,
             CompositionHeight = _lastCompositionHeight
         };
@@ -684,7 +735,7 @@ public sealed class MpvPlayer : IMediaPlayer
         {
             try
             {
-                await Task.Delay(300, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(StatePollInterval, cancellationToken).ConfigureAwait(false);
                 PlayerState snapshot;
                 lock (_sync)
                 {
@@ -782,6 +833,7 @@ public sealed class MpvPlayer : IMediaPlayer
             ?? "Mio";
         next.HasMedia = !next.IsIdleActive && !string.IsNullOrWhiteSpace(_currentFile);
         next.IsSwapChainReady = _lastSwapChain != IntPtr.Zero;
+        next.IsVideoReady = _videoReady;
         if (next.HasMedia)
         {
             RefreshTrackListsLocked(forceTrackReload);
@@ -929,7 +981,7 @@ public sealed class MpvPlayer : IMediaPlayer
     private void SetOptionLocked(string name, string value)
     {
         var result = MpvNative.SetOptionString(_handle, name, value);
-        Log($"option {name}={value} {DescribeResultWithError(result)}");
+        Log($"option {name}={value} result={DescribeResult(result)}");
         MpvNative.ThrowIfError(result, $"set option {name}");
     }
 
@@ -1005,18 +1057,6 @@ public sealed class MpvPlayer : IMediaPlayer
         return result < 0 ? $"{MpvNative.ErrorString(result)} ({result})" : result.ToString(CultureInfo.InvariantCulture);
     }
 
-    private static string DescribeResultWithError(int result)
-    {
-        return result < 0
-            ? $"result={result} error={MpvNative.ErrorString(result)}"
-            : $"result={result} error=success";
-    }
-
-    private static void Log(string message)
-    {
-        Debug.WriteLine($"[Mio.WinUI] {message}");
-    }
-
     private sealed class DisplaySwapChainDiagnostics
     {
         public int SwapChainResult { get; set; }
@@ -1049,19 +1089,16 @@ public sealed class MpvPlayer : IMediaPlayer
 
         public string? CurrentFile { get; set; }
 
-        public bool LoadFileOk { get; set; }
-
         public string ToLogLine()
         {
             var error = SwapChainResult < 0 ? $" error={SwapChainError}" : string.Empty;
-            return $"display-swapchain diag result={SwapChainResult}{error} raw={SwapChainRaw} ptr=0x{SwapChainPointer.ToInt64():X} duration={Duration:0.###} durationResult={DurationResult} idleActive={IdleActive} idleResult={IdleActiveResult} pause={Pause} pauseResult={PauseResult} timePos={TimePosition:0.###} timeResult={TimePositionResult} compositionSize={CompositionWidth}x{CompositionHeight} loadfileOk={LoadFileOk} file={CurrentFile ?? "<none>"}";
+            return $"display-swapchain diag result={SwapChainResult}{error} raw={SwapChainRaw} ptr=0x{SwapChainPointer.ToInt64():X} duration={Duration:0.###} durationResult={DurationResult} idleActive={IdleActive} idleResult={IdleActiveResult} pause={Pause} pauseResult={PauseResult} timePos={TimePosition:0.###} timeResult={TimePositionResult} compositionSize={CompositionWidth}x{CompositionHeight} file={CurrentFile ?? "<none>"}";
         }
 
         public string ToTimeoutMessage()
         {
             return string.Create(CultureInfo.InvariantCulture, $"""
 display-swapchain not available.
-loadfileOk={LoadFileOk}
 duration={Duration:0.###}
 idleActive={IdleActive}
 timePos={TimePosition:0.###}

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,14 +15,18 @@ using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
+using static Mio.Diagnostics.MioLog;
 
 namespace Mio;
 
 public sealed partial class MainWindow : Window
 {
+    private static readonly TimeSpan OverlayHideDelay = TimeSpan.FromSeconds(3);
+
     private readonly MpvPlayer _player = new();
     private readonly FullscreenService _fullscreenService;
     private readonly SwapChainBinder _swapChainBinder;
+    // 必须全限定：Windows.System 下也有同名的 DispatcherQueueTimer，两个 using 都在。
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _overlayHideTimer;
     private readonly IntPtr _hwnd;
 
@@ -44,6 +47,9 @@ public sealed partial class MainWindow : Window
 
         _swapChainBinder = new SwapChainBinder(VideoPanel, UpdateCompositionSizeFromPanel);
         _swapChainBinder.Completed += OnSwapChainBindCompleted;
+
+        // 与 RootGrid 的 #050505 一致，让 XAML 布局跟上尺寸变化前露出的那一帧不刺眼。
+        NativeMethods.SetWindowBackgroundColor(_hwnd, 0x00050505);
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(Overlay.TitleDragArea);
@@ -68,10 +74,10 @@ public sealed partial class MainWindow : Window
         _player.ErrorOccurred += ShowError;
 
         _overlayHideTimer = DispatcherQueue.CreateTimer();
-        _overlayHideTimer.Interval = TimeSpan.FromSeconds(3);
+        _overlayHideTimer.Interval = OverlayHideDelay;
         _overlayHideTimer.Tick += (_, _) => HideOverlayWhenIdle();
 
-        Overlay.ApplyState(_lastState);
+        Overlay.ApplyState(_lastState, isFullscreen: false);
         ShowOverlay();
 
         try
@@ -101,7 +107,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[Mio.WinUI] configure caption buttons failed: {ex.Message}");
+            Log($"configure caption buttons failed: {ex.Message}");
         }
     }
 
@@ -151,85 +157,60 @@ public sealed partial class MainWindow : Window
     {
         switch (e.Key)
         {
+            case VirtualKey.Escape:
+                // 非全屏时不吞掉 Esc，留给系统默认行为。
+                if (!_fullscreenService.IsFullscreen)
+                {
+                    return;
+                }
+
+                _fullscreenService.ExitFullscreen();
+                break;
             case VirtualKey.Space:
                 _player.TogglePause();
-                ShowOverlay();
-                e.Handled = true;
-                break;
-            case VirtualKey.Escape:
-                if (_fullscreenService.IsFullscreen)
-                {
-                    _fullscreenService.ExitFullscreen();
-                    e.Handled = true;
-                }
                 break;
             case VirtualKey.Left:
                 _player.SeekRelative(-InputService.SeekStepSeconds);
-                ShowOverlay();
-                e.Handled = true;
                 break;
             case VirtualKey.Right:
                 _player.SeekRelative(InputService.SeekStepSeconds);
-                ShowOverlay();
-                e.Handled = true;
                 break;
             case VirtualKey.Up:
                 _player.SetVolume(_lastState.Volume + InputService.VolumeStep);
-                ShowOverlay();
-                e.Handled = true;
                 break;
             case VirtualKey.Down:
                 _player.SetVolume(_lastState.Volume - InputService.VolumeStep);
-                ShowOverlay();
-                e.Handled = true;
                 break;
             case VirtualKey.M:
                 _player.ToggleMute();
-                ShowOverlay();
-                e.Handled = true;
                 break;
             case VirtualKey.S:
                 _player.ToggleSubtitleVisibility();
-                ShowOverlay();
-                e.Handled = true;
                 break;
             case VirtualKey.A:
-                SelectNextAudioTrack();
-                ShowOverlay();
-                e.Handled = true;
+                SelectNextTrack(_lastState.AudioTracks, _lastState.SelectedAudioTrackId, _player.SelectAudioTrack);
                 break;
             case VirtualKey.V:
-                SelectNextSubtitleTrack();
-                ShowOverlay();
-                e.Handled = true;
+                SelectNextTrack(_lastState.SubtitleTracks, _lastState.SelectedSubtitleTrackId, _player.SelectSubtitleTrack);
                 break;
+            default:
+                return;
         }
+
+        ShowOverlay();
+        e.Handled = true;
     }
 
-    private void SelectNextAudioTrack()
+    private void SelectNextTrack(IReadOnlyList<TrackInfo> tracks, int? selectedTrackId, Action<int> select)
     {
-        var tracks = _lastState.AudioTracks;
         if (!_lastState.HasMedia || tracks.Count == 0)
         {
             return;
         }
 
-        var selectedIndex = FindTrackIndex(tracks, _lastState.SelectedAudioTrackId);
-        var nextTrack = tracks[(selectedIndex + 1) % tracks.Count];
-        _player.SelectAudioTrack(nextTrack.Id);
-    }
-
-    private void SelectNextSubtitleTrack()
-    {
-        var tracks = _lastState.SubtitleTracks;
-        if (!_lastState.HasMedia || tracks.Count == 0)
-        {
-            return;
-        }
-
-        var selectedIndex = FindTrackIndex(tracks, _lastState.SelectedSubtitleTrackId);
-        var nextTrack = tracks[(selectedIndex + 1) % tracks.Count];
-        _player.SelectSubtitleTrack(nextTrack.Id);
+        // 找不到当前轨道时返回 -1，加一后正好从第一条开始。
+        var nextIndex = (FindTrackIndex(tracks, selectedTrackId) + 1) % tracks.Count;
+        select(tracks[nextIndex].Id);
     }
 
     private static int FindTrackIndex(IReadOnlyList<TrackInfo> tracks, int? selectedTrackId)
@@ -281,14 +262,15 @@ public sealed partial class MainWindow : Window
 
     private void VideoPanel_Loaded(object sender, RoutedEventArgs e)
     {
-        Debug.WriteLine("[Mio.WinUI] VideoPanel loaded");
+        Log("VideoPanel loaded");
         UpdateCompositionSizeFromPanel();
         UpdateOverlayViewportInsets();
     }
 
     private void VideoPanel_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        Debug.WriteLine("[Mio.WinUI] panel size changed");
+        // 不在这里打日志：UpdateCompositionSizeFromPanel 紧接着就会输出带尺寸的那条，
+        // 拖动窗口时每帧两行纯属刷屏。
         UpdateCompositionSizeFromPanel();
         UpdateOverlayViewportInsets();
     }
@@ -327,7 +309,7 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            Debug.WriteLine($"[Mio.WinUI] media load superseded path={path}");
+            Log($"media load superseded path={path}");
         }
         catch (Exception ex) when (ex is MpvException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -385,8 +367,7 @@ public sealed partial class MainWindow : Window
         DispatcherQueue.TryEnqueue(() =>
         {
             _lastState = state;
-            _lastState.IsFullscreen = _fullscreenService.IsFullscreen;
-            Overlay.ApplyState(_lastState);
+            Overlay.ApplyState(_lastState, _fullscreenService.IsFullscreen);
             UpdateOverlayViewportInsets();
             UpdateIdleLayer();
 
@@ -402,28 +383,38 @@ public sealed partial class MainWindow : Window
         DispatcherQueue.TryEnqueue(() => _swapChainBinder.Bind(swapChain));
     }
 
+    // async void：这里逃逸的异常会直接终止进程（App 的处理器只记日志、不置 Handled），
+    // 所以必须整体兜住。
     private async void OnSwapChainBindCompleted(SwapChainBindOutcome outcome)
     {
-        switch (outcome.Status)
+        try
         {
-            case SwapChainBindStatus.Bound:
-                _swapChainRecoveryAttempts = 0;
-                ClearError();
-                UpdateCompositionSizeFromPanel();
-                UpdateOverlayViewportInsets();
-                return;
+            switch (outcome.Status)
+            {
+                case SwapChainBindStatus.Bound:
+                    _swapChainRecoveryAttempts = 0;
+                    ClearError();
+                    UpdateCompositionSizeFromPanel();
+                    UpdateOverlayViewportInsets();
+                    return;
 
-            case SwapChainBindStatus.InterfaceUnavailable:
-                ShowError("SwapChainPanel native interop failed: ISwapChainPanelNative not available. Check WinUI 3 dxinterop GUID/interface.");
+                case SwapChainBindStatus.InterfaceUnavailable:
+                    ShowError("SwapChainPanel native interop failed: ISwapChainPanelNative not available. Check WinUI 3 dxinterop GUID/interface.");
+                    return;
+            }
+
+            if (outcome.CanRecoverByReload && await TryRecoverSwapChainBindingAsync())
+            {
                 return;
+            }
+
+            ShowError($"SetSwapChain failed: HRESULT {ComHelpers.FormatHResult(outcome.HResult)}");
         }
-
-        if (outcome.CanRecoverByReload && await TryRecoverSwapChainBindingAsync())
+        catch (Exception ex)
         {
-            return;
+            Log($"swapchain bind handling failed: {ex}");
+            ShowError(ex.Message);
         }
-
-        ShowError($"SetSwapChain failed: HRESULT {ComHelpers.FormatHResult(outcome.HResult)}");
     }
 
     private async Task<bool> TryRecoverSwapChainBindingAsync()
@@ -438,13 +429,13 @@ public sealed partial class MainWindow : Window
         _isRecoveringSwapChain = true;
         try
         {
-            Debug.WriteLine("[Mio.WinUI] recovering SetSwapChain E_FAIL by reloading current file after panel is ready");
+            Log("recovering SetSwapChain E_FAIL by reloading current file after panel is ready");
             await LoadFileAsync(currentFile, isSwapChainRecovery: true);
             return true;
         }
         catch (Exception ex) when (ex is MpvException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            Debug.WriteLine($"[Mio.WinUI] SetSwapChain recovery failed: {ex.Message}");
+            Log($"SetSwapChain recovery failed: {ex.Message}");
             ShowError(ex.Message);
             return true;
         }
@@ -456,8 +447,12 @@ public sealed partial class MainWindow : Window
 
     private void OnFullscreenChanged(bool isFullscreen)
     {
-        _lastState.IsFullscreen = isFullscreen;
-        Overlay.ApplyState(_lastState);
+        // 光 SetTitleBar(null) 不够：extend 模式下 WinUI 会回退到默认拖动区
+        // （窗口顶部一条），全屏窗口照样能被拖走。必须连 extend 一起关掉——
+        // 全屏是 WS_POPUP，本来也没有标题栏可延伸。
+        ExtendsContentIntoTitleBar = !isFullscreen;
+        SetTitleBar(isFullscreen ? null : Overlay.TitleDragArea);
+        Overlay.ApplyState(_lastState, isFullscreen);
         ShowOverlay();
         UpdateCompositionSizeFromPanel();
         UpdateOverlayViewportInsets();
@@ -472,7 +467,7 @@ public sealed partial class MainWindow : Window
     {
         if (!VideoPanel.IsLoaded)
         {
-            Debug.WriteLine("[Mio.WinUI] d3d11-composition-size skipped: VideoPanel not loaded");
+            Log("d3d11-composition-size skipped: VideoPanel not loaded");
             return;
         }
 
@@ -486,11 +481,11 @@ public sealed partial class MainWindow : Window
         var height = (int)Math.Round(VideoPanel.ActualHeight * scale.Value);
         if (width <= 0 || height <= 0)
         {
-            Debug.WriteLine($"[Mio.WinUI] d3d11-composition-size skipped: invalid panel size dip={VideoPanel.ActualWidth:0.###}x{VideoPanel.ActualHeight:0.###} scale={scale.Value:0.###} pixels={width}x{height}");
+            Log($"d3d11-composition-size skipped: invalid panel size dip={VideoPanel.ActualWidth:0.###}x{VideoPanel.ActualHeight:0.###} scale={scale.Value:0.###} pixels={width}x{height}");
             return;
         }
 
-        Debug.WriteLine($"[Mio.WinUI] d3d11-composition-size panel dip={VideoPanel.ActualWidth:0.###}x{VideoPanel.ActualHeight:0.###} scale={scale.Value:0.###} pixels={width}x{height}");
+        Log($"d3d11-composition-size panel dip={VideoPanel.ActualWidth:0.###}x{VideoPanel.ActualHeight:0.###} scale={scale.Value:0.###} pixels={width}x{height}");
         _player.SetCompositionSize(width, height);
     }
 
@@ -520,27 +515,48 @@ public sealed partial class MainWindow : Window
 
     private void UpdateIdleLayer()
     {
-        IdleLayer.Visibility = (!_lastState.HasMedia || _hasVisibleError) ? Visibility.Visible : Visibility.Collapsed;
-        IdleTitle.Text = _lastState.HasMedia ? "Playback issue" : "Drop video here";
-        StatusText.Text = _lastState.HasMedia
-            ? (_lastState.IsSwapChainReady ? "Video surface ready" : "Waiting for D3D11 swapchain")
-            : "No media";
+        // 一直盖到 mpv 报告 playback-restart 为止：swapchain 指针可用不代表已经有画面，
+        // 提前揭开会闪一下未初始化的 back buffer（首次加载时表现为白屏）。
+        var showIdle = !_lastState.HasMedia || !_lastState.IsVideoReady || _hasVisibleError;
+        IdleLayer.Visibility = showIdle ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!_lastState.HasMedia)
+        {
+            IdleTitle.Text = "Drop video here";
+            StatusText.Text = "No media";
+            return;
+        }
+
+        IdleTitle.Text = _hasVisibleError ? "Playback issue" : "Loading";
+        StatusText.Text = _lastState.IsSwapChainReady ? "Video surface ready" : "Waiting for D3D11 swapchain";
     }
 
+    // ShowError 会被 player 的后台线程调用，ClearError 目前只来自 UI 线程；
+    // 两者都走同一套线程检查，避免哪天调用方换了线程就炸。已在 UI 线程时同步执行，
+    // 不引入额外的调度延迟。
     private void ShowError(string message)
     {
-        DispatcherQueue.TryEnqueue(() =>
+        if (!DispatcherQueue.HasThreadAccess)
         {
-            _hasVisibleError = true;
-            ErrorText.Text = message;
-            ErrorText.Visibility = Visibility.Visible;
-            UpdateIdleLayer();
-            ShowOverlay();
-        });
+            DispatcherQueue.TryEnqueue(() => ShowError(message));
+            return;
+        }
+
+        _hasVisibleError = true;
+        ErrorText.Text = message;
+        ErrorText.Visibility = Visibility.Visible;
+        UpdateIdleLayer();
+        ShowOverlay();
     }
 
     private void ClearError()
     {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(ClearError);
+            return;
+        }
+
         _hasVisibleError = false;
         ErrorText.Text = string.Empty;
         ErrorText.Visibility = Visibility.Collapsed;
@@ -568,7 +584,7 @@ public sealed partial class MainWindow : Window
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
-        Debug.WriteLine("[Mio.WinUI] dispose start");
+        Log("window closing");
         _loadGeneration++;
         _loadCancellation?.Cancel();
         _loadCancellation?.Dispose();
@@ -577,6 +593,6 @@ public sealed partial class MainWindow : Window
         _swapChainBinder.Clear();
 
         _player.Dispose();
-        Debug.WriteLine("[Mio.WinUI] dispose complete");
+        Log("window closed");
     }
 }

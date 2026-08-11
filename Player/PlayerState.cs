@@ -62,9 +62,13 @@ public sealed class PlayerState
 
     public bool SubtitlesVisible { get; set; }
 
-    public bool IsFullscreen { get; set; }
-
     public bool IsSwapChainReady { get; set; }
+
+    /// <summary>
+    /// mpv 是否已经准备好输出画面（收到 playback-restart）。swapchain 指针可用只代表
+    /// 它被创建了，此时 mpv 可能还没 Present 过，back buffer 里是未初始化内容。
+    /// </summary>
+    public bool IsVideoReady { get; set; }
 
     public static PlayerState CreateIdle()
     {
@@ -96,8 +100,7 @@ public sealed class PlayerState
             IsIdleActive = false,
             IsPaused = IsPaused,
             Volume = Volume,
-            IsMuted = IsMuted,
-            IsFullscreen = IsFullscreen
+            IsMuted = IsMuted
         };
     }
 }

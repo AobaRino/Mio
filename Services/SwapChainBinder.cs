@@ -1,9 +1,9 @@
 using System;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml.Controls;
 using Mio.Interop;
+using static Mio.Diagnostics.MioLog;
 
 namespace Mio.Services;
 
@@ -160,10 +160,5 @@ public sealed class SwapChainBinder
     private bool IsCurrent(long generation, CancellationToken cancellationToken)
     {
         return !cancellationToken.IsCancellationRequested && generation == _generation;
-    }
-
-    private static void Log(string message)
-    {
-        Debug.WriteLine($"[Mio.WinUI] {message}");
     }
 }

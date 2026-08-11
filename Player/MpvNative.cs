@@ -24,7 +24,8 @@ internal enum MpvEventId
     LogMessage = 2,
     StartFile = 6,
     EndFile = 7,
-    FileLoaded = 8
+    FileLoaded = 8,
+    PlaybackRestart = 21
 }
 
 internal enum MpvEndFileReason
