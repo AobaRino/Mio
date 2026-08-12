@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -27,8 +26,6 @@ public sealed class MpvPlayer : IMediaPlayer
     };
 
     private const int MaxTrackCount = 512;
-    private const int MaxRecentLogErrors = 5;
-    private const double EventWaitSeconds = 1.0;
     private static readonly TimeSpan BackgroundShutdownTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan StatePollInterval = TimeSpan.FromMilliseconds(300);
     private static readonly TimeSpan SwapChainWaitTimeout = TimeSpan.FromSeconds(2);
@@ -36,13 +33,7 @@ public sealed class MpvPlayer : IMediaPlayer
     private static readonly TimeSpan SwapChainDiagnosticInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly object _sync = new();
-    private readonly object _errorSync = new();
-    private readonly List<string> _recentLogErrors = new();
-    private CancellationTokenSource? _eventCancellation;
-    private Task? _eventTask;
-    private long _mediaGeneration;
-    private long _loadErrorGeneration = -1;
-    private string? _loadErrorMessage;
+    private readonly MpvEventLoop _eventLoop;
     private IReadOnlyList<TrackInfo> _cachedAudioTracks = Array.Empty<TrackInfo>();
     private IReadOnlyList<TrackInfo> _cachedSubtitleTracks = Array.Empty<TrackInfo>();
     private int _lastTrackListCount = -1;
@@ -61,6 +52,21 @@ public sealed class MpvPlayer : IMediaPlayer
     public event Action<PlayerState>? StateChanged;
     public event Action<string>? ErrorOccurred;
     public event Action<IntPtr>? SwapChainChanged;
+
+    public MpvPlayer()
+    {
+        _eventLoop = new MpvEventLoop(GetHandle);
+        _eventLoop.ErrorOccurred += message => ErrorOccurred?.Invoke(message);
+        _eventLoop.PlaybackRestarted += OnPlaybackRestarted;
+    }
+
+    private IntPtr GetHandle()
+    {
+        lock (_sync)
+        {
+            return _handle;
+        }
+    }
 
     public PlayerState State
     {
@@ -109,7 +115,7 @@ public sealed class MpvPlayer : IMediaPlayer
         }
 
         StartPolling();
-        StartEventLoop();
+        _eventLoop.Start();
     }
 
     public async Task LoadAsync(string path, CancellationToken cancellationToken = default)
@@ -123,7 +129,7 @@ public sealed class MpvPlayer : IMediaPlayer
             throw new FileNotFoundException("Media file was not found.", fullPath);
         }
 
-        var mediaGeneration = BeginMediaGeneration();
+        var mediaGeneration = _eventLoop.BeginMediaGeneration();
 
         PlayerState snapshot;
         lock (_sync)
@@ -340,26 +346,9 @@ public sealed class MpvPlayer : IMediaPlayer
         _disposed = true;
         Log("dispose start");
         _pollCancellation?.Cancel();
-        _eventCancellation?.Cancel();
 
-        IntPtr handle;
-        lock (_sync)
-        {
-            handle = _handle;
-        }
-
-        // 唤醒可能正阻塞在 mpv_wait_event 的事件线程，让它尽快看到取消信号。
-        if (handle != IntPtr.Zero)
-        {
-            try
-            {
-                MpvNative.Wakeup(handle);
-            }
-            catch (Exception ex)
-            {
-                Log($"mpv_wakeup failed: {ex.Message}");
-            }
-        }
+        // 内部会唤醒可能正阻塞在 mpv_wait_event 的线程，让它尽快看到取消信号。
+        _eventLoop.RequestStop();
 
         // 事件线程在锁外调用 mpv_wait_event，必须确认后台任务都已退出才能销毁 handle。
         // 等不到就宁可泄漏 handle：进程即将退出，泄漏无害，use-after-free 会崩。
@@ -367,10 +356,11 @@ public sealed class MpvPlayer : IMediaPlayer
         {
             Log("background tasks still running; skipping mpv_terminate_destroy to avoid use-after-free");
             _pollCancellation?.Dispose();
-            _eventCancellation?.Dispose();
+            _eventLoop.Dispose();
             return;
         }
 
+        IntPtr handle;
         lock (_sync)
         {
             handle = _handle;
@@ -391,16 +381,16 @@ public sealed class MpvPlayer : IMediaPlayer
         }
 
         _pollCancellation?.Dispose();
-        _eventCancellation?.Dispose();
+        _eventLoop.Dispose();
         Log("dispose complete");
     }
 
     private bool WaitForBackgroundTasks()
     {
         var tasks = new List<Task>(2);
-        if (_eventTask is not null)
+        if (_eventLoop.Task is not null)
         {
-            tasks.Add(_eventTask);
+            tasks.Add(_eventLoop.Task);
         }
 
         if (_pollTask is not null)
@@ -431,75 +421,9 @@ public sealed class MpvPlayer : IMediaPlayer
         _pollTask = PollStateAsync(_pollCancellation.Token);
     }
 
-    private void StartEventLoop()
-    {
-        _eventCancellation = new CancellationTokenSource();
-        var cancellationToken = _eventCancellation.Token;
-
-        // mpv_wait_event 是阻塞调用，且同一时刻只允许一个线程调用它，
-        // 所以固定用一个专属长驻线程，不占线程池。
-        _eventTask = Task.Factory.StartNew(
-            () => RunEventLoop(cancellationToken),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default);
-    }
-
-    private void RunEventLoop(CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            IntPtr handle;
-            lock (_sync)
-            {
-                handle = _handle;
-            }
-
-            if (handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            MpvEvent? mpvEvent;
-            try
-            {
-                mpvEvent = MpvNative.WaitEvent(handle, EventWaitSeconds);
-            }
-            catch (Exception ex)
-            {
-                Log($"mpv_wait_event failed: {ex.Message}");
-                return;
-            }
-
-            if (mpvEvent is null)
-            {
-                continue;
-            }
-
-            switch (mpvEvent.Value.EventId)
-            {
-                case MpvEventId.Shutdown:
-                    Log("event shutdown");
-                    return;
-                case MpvEventId.LogMessage:
-                    HandleLogMessage(mpvEvent.Value.Data);
-                    break;
-                case MpvEventId.EndFile:
-                    HandleEndFile(mpvEvent.Value.Data);
-                    break;
-                case MpvEventId.FileLoaded:
-                    Log("event file-loaded");
-                    break;
-                case MpvEventId.PlaybackRestart:
-                    HandlePlaybackRestart();
-                    break;
-            }
-        }
-    }
-
     // playback-restart 表示 mpv 已经就绪并会开始输出画面。在此之前 swapchain 虽然
     // 已创建，back buffer 里却还是未初始化内容，直接显示会闪一下白屏。
-    private void HandlePlaybackRestart()
+    private void OnPlaybackRestarted()
     {
         lock (_sync)
         {
@@ -511,88 +435,7 @@ public sealed class MpvPlayer : IMediaPlayer
             _videoReady = true;
         }
 
-        Log("event playback-restart");
         PublishStateSnapshot();
-    }
-
-    private void HandleLogMessage(IntPtr data)
-    {
-        var message = MpvNative.ReadLogMessage(data);
-        if (message is null)
-        {
-            return;
-        }
-
-        Log($"mpv log: {message}");
-        lock (_errorSync)
-        {
-            if (_recentLogErrors.Count >= MaxRecentLogErrors)
-            {
-                _recentLogErrors.RemoveAt(0);
-            }
-
-            _recentLogErrors.Add(message);
-        }
-    }
-
-    private void HandleEndFile(IntPtr data)
-    {
-        var endFile = MpvNative.ReadEndFile(data);
-        var reason = (MpvEndFileReason)endFile.Reason;
-        Log($"event end-file reason={reason} error={endFile.Error}");
-
-        if (reason != MpvEndFileReason.Error)
-        {
-            return;
-        }
-
-        var message = endFile.Error < 0
-            ? $"Playback failed: {MpvNative.ErrorString(endFile.Error)} ({endFile.Error})"
-            : "Playback failed: mpv could not open this file.";
-
-        lock (_errorSync)
-        {
-            _loadErrorGeneration = _mediaGeneration;
-            _loadErrorMessage = message;
-        }
-
-        // 播放中途失败时没有调用方在等待，这里是唯一的上报通道。
-        ErrorOccurred?.Invoke(AppendRecentLogErrors(message));
-    }
-
-    private long BeginMediaGeneration()
-    {
-        lock (_errorSync)
-        {
-            _recentLogErrors.Clear();
-            _loadErrorMessage = null;
-            return ++_mediaGeneration;
-        }
-    }
-
-    private string? TryGetLoadError(long mediaGeneration)
-    {
-        lock (_errorSync)
-        {
-            return _loadErrorGeneration == mediaGeneration && _loadErrorMessage is not null
-                ? AppendRecentLogErrorsLocked(_loadErrorMessage)
-                : null;
-        }
-    }
-
-    private string AppendRecentLogErrors(string message)
-    {
-        lock (_errorSync)
-        {
-            return AppendRecentLogErrorsLocked(message);
-        }
-    }
-
-    private string AppendRecentLogErrorsLocked(string message)
-    {
-        return _recentLogErrors.Count == 0
-            ? message
-            : message + Environment.NewLine + string.Join(Environment.NewLine, _recentLogErrors);
     }
 
     private async Task WaitForDisplaySwapChainAsync(long mediaGeneration, CancellationToken cancellationToken)
@@ -608,7 +451,7 @@ public sealed class MpvPlayer : IMediaPlayer
 
             // mpv 已经明确报告这次加载失败，再等 swapchain 只会把"文件打不开"
             // 误报成 D3D11 配置问题。
-            var loadError = TryGetLoadError(mediaGeneration);
+            var loadError = _eventLoop.TryGetLoadError(mediaGeneration);
             if (loadError is not null)
             {
                 throw new MpvException(loadError);
@@ -626,7 +469,7 @@ public sealed class MpvPlayer : IMediaPlayer
             {
                 if (wantDiagnostic)
                 {
-                    diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
+                    diagnostics = ReadDiagnosticsLocked();
                     swapChain = diagnostics.SwapChainPointer;
                 }
                 else
@@ -667,7 +510,7 @@ public sealed class MpvPlayer : IMediaPlayer
             await Task.Delay(SwapChainPollInterval, cancellationToken).ConfigureAwait(false);
         }
 
-        var timeoutLoadError = TryGetLoadError(mediaGeneration);
+        var timeoutLoadError = _eventLoop.TryGetLoadError(mediaGeneration);
         if (timeoutLoadError is not null)
         {
             throw new MpvException(timeoutLoadError);
@@ -675,12 +518,12 @@ public sealed class MpvPlayer : IMediaPlayer
 
         lock (_sync)
         {
-            diagnostics = ReadDisplaySwapChainDiagnosticsLocked();
+            diagnostics = ReadDiagnosticsLocked();
         }
 
         // 只抛出，由 LoadAsync 的调用方统一上报；ErrorOccurred 留给没有调用方
         // 在等待的异步错误，避免同一条错误走两个通道。
-        throw new MpvException(AppendRecentLogErrors(diagnostics.ToTimeoutMessage()));
+        throw new MpvException(_eventLoop.AppendRecentLogErrors(diagnostics.ToTimeoutMessage()));
     }
 
     private IntPtr ReadDisplaySwapChainPointerLocked()
@@ -695,38 +538,13 @@ public sealed class MpvPlayer : IMediaPlayer
             : IntPtr.Zero;
     }
 
-    private DisplaySwapChainDiagnostics ReadDisplaySwapChainDiagnosticsLocked()
+    private DisplaySwapChainDiagnostics ReadDiagnosticsLocked()
     {
-        var diagnostics = new DisplaySwapChainDiagnostics
-        {
-            CurrentFile = _currentFile,
-            CompositionWidth = _lastCompositionWidth,
-            CompositionHeight = _lastCompositionHeight
-        };
-
-        if (!_initialized || _handle == IntPtr.Zero)
-        {
-            diagnostics.SwapChainResult = int.MinValue;
-            return diagnostics;
-        }
-
-        diagnostics.SwapChainResult = MpvNative.TryGetInt64WithResult(_handle, MpvProperty.DisplaySwapChain, out var swapChainRaw);
-        diagnostics.SwapChainRaw = swapChainRaw;
-        diagnostics.SwapChainPointer = swapChainRaw == 0 ? IntPtr.Zero : new IntPtr(swapChainRaw);
-        if (diagnostics.SwapChainResult < 0)
-        {
-            diagnostics.SwapChainError = MpvNative.ErrorString(diagnostics.SwapChainResult);
-        }
-
-        diagnostics.DurationResult = MpvNative.TryGetDoubleWithResult(_handle, MpvProperty.Duration, out var duration);
-        diagnostics.Duration = duration;
-        diagnostics.IdleActiveResult = MpvNative.TryGetFlagWithResult(_handle, MpvProperty.IdleActive, out var idleActive);
-        diagnostics.IdleActive = idleActive;
-        diagnostics.PauseResult = MpvNative.TryGetFlagWithResult(_handle, MpvProperty.Pause, out var pause);
-        diagnostics.Pause = pause;
-        diagnostics.TimePositionResult = MpvNative.TryGetDoubleWithResult(_handle, MpvProperty.TimePosition, out var timePosition);
-        diagnostics.TimePosition = timePosition;
-        return diagnostics;
+        return DisplaySwapChainDiagnostics.Read(
+            _initialized ? _handle : IntPtr.Zero,
+            _currentFile,
+            _lastCompositionWidth,
+            _lastCompositionHeight);
     }
 
     private async Task PollStateAsync(CancellationToken cancellationToken)
@@ -1055,59 +873,5 @@ public sealed class MpvPlayer : IMediaPlayer
     private static string DescribeResult(int result)
     {
         return result < 0 ? $"{MpvNative.ErrorString(result)} ({result})" : result.ToString(CultureInfo.InvariantCulture);
-    }
-
-    private sealed class DisplaySwapChainDiagnostics
-    {
-        public int SwapChainResult { get; set; }
-
-        public long SwapChainRaw { get; set; }
-
-        public IntPtr SwapChainPointer { get; set; }
-
-        public string? SwapChainError { get; set; }
-
-        public int DurationResult { get; set; }
-
-        public double Duration { get; set; }
-
-        public int IdleActiveResult { get; set; }
-
-        public bool IdleActive { get; set; }
-
-        public int PauseResult { get; set; }
-
-        public bool Pause { get; set; }
-
-        public int TimePositionResult { get; set; }
-
-        public double TimePosition { get; set; }
-
-        public int CompositionWidth { get; set; }
-
-        public int CompositionHeight { get; set; }
-
-        public string? CurrentFile { get; set; }
-
-        public string ToLogLine()
-        {
-            var error = SwapChainResult < 0 ? $" error={SwapChainError}" : string.Empty;
-            return $"display-swapchain diag result={SwapChainResult}{error} raw={SwapChainRaw} ptr=0x{SwapChainPointer.ToInt64():X} duration={Duration:0.###} durationResult={DurationResult} idleActive={IdleActive} idleResult={IdleActiveResult} pause={Pause} pauseResult={PauseResult} timePos={TimePosition:0.###} timeResult={TimePositionResult} compositionSize={CompositionWidth}x{CompositionHeight} file={CurrentFile ?? "<none>"}";
-        }
-
-        public string ToTimeoutMessage()
-        {
-            return string.Create(CultureInfo.InvariantCulture, $"""
-display-swapchain not available.
-duration={Duration:0.###}
-idleActive={IdleActive}
-timePos={TimePosition:0.###}
-lastSwapChainRaw={SwapChainRaw}
-lastSwapChainResult={SwapChainResult}
-compositionSize={CompositionWidth}x{CompositionHeight}
-currentFile={CurrentFile ?? "<none>"}
-Check d3d11-output-mode=composition, d3d11-composition-size, and mpv D3D11 options.
-""");
-        }
     }
 }
