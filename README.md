@@ -46,7 +46,17 @@ dotnet run
 dotnet publish -c Release
 ```
 
-Release 会启用 ReadyToRun 并移除上述诊断日志。发布配置只在 `Properties/PublishProfiles/win-x64.pubxml` 描述输出方式，不再硬编码 `Configuration`，所以构建配置一律由命令行 `-c` 决定。
+Release 会启用 ReadyToRun 并移除上述诊断日志。
+
+`Properties/PublishProfiles/win-x64.pubxml` 只描述输出方式，不硬编码 `Configuration` 与 `TargetFramework`。这一点必须保持：csproj 里的 `PublishProfile` 属性会让该文件被导入普通 build，在里面写死的属性会静默覆盖项目设置——`TargetFramework` 曾因此让升级到 26100 的改动完全不生效，而输出目录名是唯一的迹象。
+
+## 测试
+
+```powershell
+dotnet test
+```
+
+`Mio.Tests` 覆盖不依赖 WinUI 运行时的纯逻辑：时间格式化、黑边内缩计算、轨道循环切换、`PlayerState` 的宽高比回退与切片重置契约、`TrackInfo` 显示名拼装、mpv 命令数组拼装。涉及 XAML 控件的部分无法在单元测试里实例化，所以这类逻辑应尽量抽成不依赖 WinUI 的静态方法再测。
 
 当前项目固定 x64，使用 `net10.0-windows10.0.26100.0` 和 `Microsoft.WindowsAppSDK 2.3.1`。`TargetPlatformMinVersion` 保持 `10.0.17763.0`，TFM 的 Windows 版本只决定编译期可用的 WinRT API，不抬高运行所需的系统版本。
 

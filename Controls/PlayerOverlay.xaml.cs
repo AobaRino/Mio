@@ -204,13 +204,13 @@ public sealed partial class PlayerOverlay : UserControl
             var canSeek = state.HasMedia && !state.IsIdleActive && state.Duration > 0;
             SeekSlider.IsEnabled = canSeek;
             SeekSlider.Maximum = canSeek ? Math.Max(1, state.Duration) : 1;
-            DurationText.Text = FormatTime(state.Duration);
+            DurationText.Text = TimeFormat.Format(state.Duration);
 
             _lastProgressPosition = canSeek ? Clamp(state.Position, 0, SeekSlider.Maximum) : 0;
             _lastProgressDuration = canSeek ? state.Duration : 0;
             _lastProgressUpdateTime = DateTimeOffset.UtcNow;
             _isProgressInterpolating = canSeek && !state.IsPaused && !state.IsEndOfFile;
-            CurrentTimeText.Text = FormatTime(_lastProgressPosition);
+            CurrentTimeText.Text = TimeFormat.Format(_lastProgressPosition);
 
             if (!_isSeeking)
             {
@@ -370,7 +370,7 @@ public sealed partial class PlayerOverlay : UserControl
         }
 
         var pointerX = e.GetCurrentPoint(SeekSlider).Position.X;
-        SeekPreviewTime.Text = FormatTime(_currentState.Duration * GetSeekRatioFromPointerX(pointerX));
+        SeekPreviewTime.Text = TimeFormat.Format(_currentState.Duration * GetSeekRatioFromPointerX(pointerX));
 
         // BottomContent 的左边距正好是 SeekSlider 相对 OverlayRoot 的水平偏移，
         // 它已经含了视频黑边内缩，所以预览能跟着控件一起对齐画面。
@@ -430,7 +430,7 @@ public sealed partial class PlayerOverlay : UserControl
 
         if (_isSeeking)
         {
-            CurrentTimeText.Text = FormatTime(e.NewValue);
+            CurrentTimeText.Text = TimeFormat.Format(e.NewValue);
         }
     }
 
@@ -478,7 +478,7 @@ public sealed partial class PlayerOverlay : UserControl
         try
         {
             SeekSlider.Value = position;
-            CurrentTimeText.Text = FormatTime(position);
+            CurrentTimeText.Text = TimeFormat.Format(position);
         }
         finally
         {
@@ -517,19 +517,6 @@ public sealed partial class PlayerOverlay : UserControl
     private void OverlayRoot_PointerExited(object sender, PointerRoutedEventArgs e)
     {
         IsPointerWithin = false;
-    }
-
-    private static string FormatTime(double seconds)
-    {
-        if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds <= 0)
-        {
-            return "0:00";
-        }
-
-        var time = TimeSpan.FromSeconds(seconds);
-        return time.TotalHours >= 1
-            ? string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}:{2:00}", (int)time.TotalHours, time.Minutes, time.Seconds)
-            : string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}", (int)time.TotalMinutes, time.Seconds);
     }
 
     private static double Clamp(double value, double min, double max)

@@ -30,6 +30,8 @@
     <Prefer32Bit>false</Prefer32Bit>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- 主项目在仓库根目录，默认 glob 会把测试项目的源码一并吸进来 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);Mio.Tests\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(DisableMsixProjectCapabilityAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">

@@ -203,32 +203,15 @@ public sealed partial class MainWindow : Window
 
     private void SelectNextTrack(IReadOnlyList<TrackInfo> tracks, int? selectedTrackId, Action<int> select)
     {
-        if (!_lastState.HasMedia || tracks.Count == 0)
+        if (!_lastState.HasMedia)
         {
             return;
         }
 
-        // 找不到当前轨道时返回 -1，加一后正好从第一条开始。
-        var nextIndex = (FindTrackIndex(tracks, selectedTrackId) + 1) % tracks.Count;
-        select(tracks[nextIndex].Id);
-    }
-
-    private static int FindTrackIndex(IReadOnlyList<TrackInfo> tracks, int? selectedTrackId)
-    {
-        if (selectedTrackId is null)
+        if (TrackSelection.GetNextTrackId(tracks, selectedTrackId) is { } nextTrackId)
         {
-            return -1;
+            select(nextTrackId);
         }
-
-        for (var index = 0; index < tracks.Count; index++)
-        {
-            if (tracks[index].Id == selectedTrackId.Value)
-            {
-                return index;
-            }
-        }
-
-        return -1;
     }
 
     private void RootGrid_PointerMoved(object sender, PointerRoutedEventArgs e)
@@ -491,26 +474,10 @@ public sealed partial class MainWindow : Window
 
     private void UpdateOverlayViewportInsets()
     {
-        var panelWidth = VideoPanel.ActualWidth;
-        var panelHeight = VideoPanel.ActualHeight;
-        var videoAspectRatio = _lastState.VideoAspectRatio;
-
-        if (panelWidth <= 0 || panelHeight <= 0 || videoAspectRatio <= 0)
-        {
-            Overlay.SetVideoContentInset(0);
-            return;
-        }
-
-        var panelAspectRatio = panelWidth / panelHeight;
-        var horizontalInset = 0.0;
-
-        if (panelAspectRatio > videoAspectRatio)
-        {
-            var visibleVideoWidth = panelHeight * videoAspectRatio;
-            horizontalInset = (panelWidth - visibleVideoWidth) / 2;
-        }
-
-        Overlay.SetVideoContentInset(horizontalInset);
+        Overlay.SetVideoContentInset(VideoLayout.CalculateHorizontalInset(
+            VideoPanel.ActualWidth,
+            VideoPanel.ActualHeight,
+            _lastState.VideoAspectRatio));
     }
 
     private void UpdateIdleLayer()
