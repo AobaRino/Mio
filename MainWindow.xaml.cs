@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
@@ -13,6 +14,7 @@ using Mio.Player;
 using Mio.Services;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
+using Windows.UI.Core;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 using static Mio.Diagnostics.MioLog;
@@ -165,6 +167,23 @@ public sealed partial class MainWindow : Window
 
     private void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // KeyRoutedEventArgs 不带修饰键，得单独查当前线程的键盘状态。
+        var isControlDown = InputKeyboardSource
+            .GetKeyStateForCurrentThread(VirtualKey.Control)
+            .HasFlag(CoreVirtualKeyStates.Down);
+
+        if (isControlDown)
+        {
+            if (e.Key != VirtualKey.O)
+            {
+                return;
+            }
+
+            _ = OpenFileAsync();
+            e.Handled = true;
+            return;
+        }
+
         switch (e.Key)
         {
             case VirtualKey.Escape:
@@ -179,11 +198,21 @@ public sealed partial class MainWindow : Window
             case VirtualKey.Space:
                 _player.TogglePause();
                 break;
+            case VirtualKey.F:
+            case VirtualKey.F11:
+                ToggleFullscreen();
+                break;
             case VirtualKey.Left:
                 _player.SeekRelative(-InputService.SeekStepSeconds);
                 break;
             case VirtualKey.Right:
                 _player.SeekRelative(InputService.SeekStepSeconds);
+                break;
+            case VirtualKey.J:
+                _player.SeekRelative(-InputService.LargeSeekStepSeconds);
+                break;
+            case VirtualKey.L:
+                _player.SeekRelative(InputService.LargeSeekStepSeconds);
                 break;
             case VirtualKey.Up:
                 _player.SetVolume(_lastState.Volume + InputService.VolumeStep);
@@ -318,6 +347,34 @@ public sealed partial class MainWindow : Window
                 _loadCancellation = null;
                 cancellation.Dispose();
             }
+        }
+    }
+
+    private async Task OpenFileAsync()
+    {
+        var picker = new FileOpenPicker
+        {
+            SuggestedStartLocation = PickerLocationId.VideosLibrary
+        };
+        InitializeWithWindow.Initialize(picker, _hwnd);
+        foreach (var extension in InputService.MediaFileExtensions)
+        {
+            picker.FileTypeFilter.Add(extension);
+        }
+
+        try
+        {
+            var file = await picker.PickSingleFileAsync();
+            if (file is null)
+            {
+                return;
+            }
+
+            await LoadFileAsync(file.Path);
+        }
+        catch (Exception ex) when (ex is MpvException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ShowError(ex.Message);
         }
     }
 

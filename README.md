@@ -22,11 +22,27 @@ Mio 使用 in-process `libmpv-2.dll`，并明确配置 mpv：
 
 项目不会 fallback 到 `wid`、child HWND、OpenGL、software render、CPU buffer 或 mpv 独立窗口。
 
-## libmpv 放置方式
-
 ## 打开媒体
 
 拖入窗口，或作为命令行参数传入。除本地文件外也接受 `http/https/rtsp/rtmp` 等 mpv 能直接打开的远程地址——从浏览器拖链接进来即可，存在性检查只对本地路径生效。
+
+也可以按 `Ctrl+O` 用文件对话框打开。对话框只列常见视频/音频扩展名（见 `InputService.MediaFileExtensions`），mpv 能打开的其余格式走拖放。
+
+## 快捷键
+
+| 键 | 作用 |
+|---|---|
+| `Space` | 播放 / 暂停 |
+| `←` / `→` | 后退 / 前进 5 秒 |
+| `J` / `L` | 后退 / 前进 10 秒 |
+| `↑` / `↓` | 音量 ±5 |
+| 滚轮 | 音量 ±5 |
+| `M` | 静音切换 |
+| `F` / `F11` / 双击画面 | 全屏切换 |
+| `Esc` | 退出全屏 |
+| `S` | 字幕显示切换 |
+| `A` / `V` | 循环切换音轨 / 字幕轨 |
+| `Ctrl+O` | 打开文件 |
 
 崩溃日志写在 `%LOCALAPPDATA%\Mio\crash.log`。未处理异常**有意不拦截**：走到那一步说明进程状态已不可靠，留下日志再崩比带病运行更容易定位。
 
@@ -60,17 +76,15 @@ Release 会启用 ReadyToRun 并移除上述诊断日志。
 
 `Properties/PublishProfiles/win-x64.pubxml` 只描述输出方式，不硬编码 `Configuration` 与 `TargetFramework`。这一点必须保持：csproj 里的 `PublishProfile` 属性会让该文件被导入普通 build，在里面写死的属性会静默覆盖项目设置——`TargetFramework` 曾因此让升级到 26100 的改动完全不生效，而输出目录名是唯一的迹象。
 
+当前项目固定 x64，使用 `net10.0-windows10.0.26100.0` 和 `Microsoft.WindowsAppSDK 2.3.1`。`TargetPlatformMinVersion` 保持 `10.0.17763.0`，TFM 的 Windows 版本只决定编译期可用的 WinRT API，不抬高运行所需的系统版本。resize/maximize/fullscreen 后会同步 D3D11 composition size。
+
 ## 测试
 
 ```powershell
 dotnet test
 ```
 
-`Mio.Tests` 覆盖不依赖 WinUI 运行时的纯逻辑：时间格式化、黑边内缩计算、轨道循环切换、`PlayerState` 的宽高比回退与切片重置契约、`TrackInfo` 显示名拼装、mpv 命令数组拼装。涉及 XAML 控件的部分无法在单元测试里实例化，所以这类逻辑应尽量抽成不依赖 WinUI 的静态方法再测。
-
-当前项目固定 x64，使用 `net10.0-windows10.0.26100.0` 和 `Microsoft.WindowsAppSDK 2.3.1`。`TargetPlatformMinVersion` 保持 `10.0.17763.0`，TFM 的 Windows 版本只决定编译期可用的 WinRT API，不抬高运行所需的系统版本。
-
-启动后将视频文件拖入窗口即可播放。第一版目标功能包括播放/暂停、进度显示、拖动 seek、音量调节、双击全屏、Esc 退出全屏、方向键 seek/调音量、resize/maximize/fullscreen 后同步 D3D11 composition size。
+`Mio.Tests` 覆盖不依赖 WinUI 运行时的纯逻辑：时间格式化、黑边内缩计算、轨道循环切换、`PlayerState` 的宽高比回退与切片重置契约、`TrackInfo` 显示名拼装、mpv 命令数组拼装、媒体来源的远程/本地判定。涉及 XAML 控件的部分无法在单元测试里实例化，所以这类逻辑应尽量抽成不依赖 WinUI 的静态方法再测。
 
 ## 播放器 UI
 
