@@ -62,10 +62,6 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>libmpv-2.dll</TargetPath>
     </Content>
-    <Content Include="Config\mpv.conf">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <TargetPath>Config\mpv.conf</TargetPath>
-    </Content>
   </ItemGroup>
 
   <PropertyGroup>
