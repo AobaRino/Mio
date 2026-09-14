@@ -24,13 +24,23 @@ Mio 使用 in-process `libmpv-2.dll`，并明确配置 mpv：
 
 ## libmpv 放置方式
 
+## 打开媒体
+
+拖入窗口，或作为命令行参数传入。除本地文件外也接受 `http/https/rtsp/rtmp` 等 mpv 能直接打开的远程地址——从浏览器拖链接进来即可，存在性检查只对本地路径生效。
+
+崩溃日志写在 `%LOCALAPPDATA%\Mio\crash.log`。未处理异常**有意不拦截**：走到那一步说明进程状态已不可靠，留下日志再崩比带病运行更容易定位。
+
+## libmpv 放置方式
+
 `libmpv-2.dll` 应放在：
 
 ```text
 Native/libmpv-2.dll
 ```
 
-项目构建时会把它复制为输出目录中的 `libmpv-2.dll`，供 P/Invoke 加载。若你的 libmpv 构建还依赖其他运行时 DLL，也需要把这些 DLL 放到最终输出目录或后续纳入 `Native/` 复制规则。Mio 不依赖系统全局安装的 mpv，也不依赖用户全局 `mpv.conf`。
+项目构建时会把它复制为输出目录中的 `libmpv-2.dll`，供 P/Invoke 加载。若你的 libmpv 构建还依赖其他运行时 DLL，也需要把这些 DLL 放到最终输出目录或后续纳入 `Native/` 复制规则。
+
+Mio 以 `config=no` 启动 libmpv，逐条设置所需选项，因此既不读系统全局 mpv 安装，也不读任何 `mpv.conf`（包括用户全局的和仓库里的）。`Config/mpv.conf` 只是一份参考文档，不随构建复制、修改它不会影响运行行为；真正生效的位置是 `Player/MpvPlayer.cs` 的 `RequiredOptions`。
 
 ## 运行
 
@@ -95,6 +105,7 @@ Mio 支持读取 mpv `track-list` 中的字幕轨道和音轨，并通过底部 
 - HDR / HDR10 / Windows Advanced Color 方向只预留架构，第一版不保证所有 HDR 显示器都完美触发 HDR 输出。
 - Dolby Vision 当前只按兼容播放方向预留，不宣传完整支持。
 - 音频 passthrough、字幕样式设置、HDR 输出格式选择和播放列表留给后续设置与 UI。
+- 远程地址只支持「拖入」和命令行传入，没有输入 URL 的界面；也没有缓冲进度显示和网络错误重试。
 - 进度条只提供悬停时间提示，不做缩略图预览。缩略图需要第二个 libmpv 实例做离屏解码，为 4K 视频再开一路完整解码的内存和 CPU 开销与轻量化定位冲突，这是明确放弃而非待办。
 
 ## 后续路线

@@ -123,10 +123,11 @@ public sealed class MpvPlayer : IMediaPlayer
         ThrowIfDisposed();
         EnsureInitialized();
 
-        var fullPath = Path.GetFullPath(path);
-        if (!File.Exists(fullPath))
+        // 远程地址交给 mpv 自己解析；只有本地路径才做存在性检查。
+        var source = MediaSource.Normalize(path);
+        if (!MediaSource.IsRemote(source) && !File.Exists(source))
         {
-            throw new FileNotFoundException("Media file was not found.", fullPath);
+            throw new FileNotFoundException("Media file was not found.", source);
         }
 
         var mediaGeneration = _eventLoop.BeginMediaGeneration();
@@ -134,16 +135,16 @@ public sealed class MpvPlayer : IMediaPlayer
         PlayerState snapshot;
         lock (_sync)
         {
-            Log($"loadfile path={fullPath}");
-            var result = MpvNative.Command(_handle, MpvCommand.LoadFile(fullPath));
+            Log($"loadfile path={source}");
+            var result = MpvNative.Command(_handle, MpvCommand.LoadFile(source));
             Log($"loadfile result={DescribeResult(result)}");
             MpvNative.ThrowIfError(result, "loadfile");
 
-            _currentFile = fullPath;
+            _currentFile = source;
             _lastSwapChain = IntPtr.Zero;
             _videoReady = false;
             ResetTrackCacheLocked();
-            _state = _state.CloneForNewMedia(fullPath, Path.GetFileName(fullPath));
+            _state = _state.CloneForNewMedia(source, MediaSource.GetDisplayName(source));
             snapshot = _state.Clone();
         }
 
@@ -647,8 +648,7 @@ public sealed class MpvPlayer : IMediaPlayer
 
         next.CurrentFile = _currentFile;
         next.MediaTitle = MpvNative.GetPropertyString(_handle, MpvProperty.MediaTitle)
-            ?? Path.GetFileName(_currentFile)
-            ?? "Mio";
+            ?? (_currentFile is null ? "Mio" : MediaSource.GetDisplayName(_currentFile));
         next.HasMedia = !next.IsIdleActive && !string.IsNullOrWhiteSpace(_currentFile);
         next.IsSwapChainReady = _lastSwapChain != IntPtr.Zero;
         next.IsVideoReady = _videoReady;

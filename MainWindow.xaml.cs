@@ -114,18 +114,28 @@ public sealed partial class MainWindow : Window
     private async void RootGrid_Drop(object sender, DragEventArgs e)
     {
         e.Handled = true;
-        var path = await FileOpenService.TryGetFirstFilePathAsync(e.DataView);
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
 
-        await LoadFileAsync(path);
+        try
+        {
+            var source = await FileOpenService.TryGetFirstMediaSourceAsync(e.DataView);
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return;
+            }
+
+            await LoadFileAsync(source);
+        }
+        catch (Exception ex)
+        {
+            // async void：这里逃逸的异常会直接终止进程。
+            Log($"drop handling failed: {ex}");
+            ShowError(ex.Message);
+        }
     }
 
     private void RootGrid_DragOver(object sender, DragEventArgs e)
     {
-        if (e.DataView.Contains(StandardDataFormats.StorageItems))
+        if (FileOpenService.CanAccept(e.DataView))
         {
             e.AcceptedOperation = DataPackageOperation.Copy;
         }
