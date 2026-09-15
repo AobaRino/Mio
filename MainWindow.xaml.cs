@@ -28,6 +28,7 @@ public sealed partial class MainWindow : Window
     private readonly MpvPlayer _player = new();
     private readonly FullscreenService _fullscreenService;
     private readonly SwapChainBinder _swapChainBinder;
+    private readonly PlaybackMemory _playbackMemory;
     // 必须全限定：Windows.System 下也有同名的 DispatcherQueueTimer，两个 using 都在。
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _overlayHideTimer;
     private readonly IntPtr _hwnd;
@@ -38,10 +39,13 @@ public sealed partial class MainWindow : Window
     private int _swapChainRecoveryAttempts;
     private bool _hasVisibleError;
     private bool _isRecoveringSwapChain;
+    private string? _resumeAppliedFor;
 
     public MainWindow()
     {
         InitializeComponent();
+
+        _playbackMemory = new PlaybackMemory(DispatcherQueue);
 
         _hwnd = WindowNative.GetWindowHandle(this);
         _fullscreenService = new FullscreenService(this);
@@ -85,6 +89,7 @@ public sealed partial class MainWindow : Window
         try
         {
             _player.Initialize();
+            _player.SetVolume(_playbackMemory.Volume);
         }
         catch (Exception ex) when (ex is MpvException or DllNotFoundException or BadImageFormatException)
         {
@@ -302,6 +307,8 @@ public sealed partial class MainWindow : Window
         if (!isSwapChainRecovery)
         {
             _swapChainRecoveryAttempts = 0;
+            // 主动加载才重新续播；swapchain 恢复是同一次观看的延续，不该再跳一次。
+            _resumeAppliedFor = null;
         }
 
         var loadGeneration = ++_loadGeneration;
@@ -420,12 +427,38 @@ public sealed partial class MainWindow : Window
             Overlay.ApplyState(_lastState, _fullscreenService.IsFullscreen);
             UpdateOverlayViewportInsets();
             UpdateIdleLayer();
+            UpdatePlaybackMemory(state);
 
             if (!_lastState.HasMedia || _lastState.IsPaused || _lastState.IsEndOfFile)
             {
                 ShowOverlay();
             }
         });
+    }
+
+    private void UpdatePlaybackMemory(PlayerState state)
+    {
+        _playbackMemory.RememberVolume(state.Volume);
+
+        if (!state.HasMedia || state.CurrentFile is not { } source)
+        {
+            return;
+        }
+
+        // 每个来源只在首帧就绪后续播一次。等 IsVideoReady 而不是 IsSwapChainReady，
+        // 因为那时 duration 才一定可用，SeekAbsolute 内部会拿它做 clamp。
+        if (state.IsVideoReady && _resumeAppliedFor != source)
+        {
+            _resumeAppliedFor = source;
+            if (_playbackMemory.GetResumePosition(source) is { } resumePosition)
+            {
+                Log($"resume {source} at {resumePosition:0.###}s");
+                _player.SeekAbsolute(resumePosition);
+                return;
+            }
+        }
+
+        _playbackMemory.RememberPosition(source, state.Position, state.Duration);
     }
 
     private void OnSwapChainChanged(IntPtr swapChain)
@@ -627,6 +660,7 @@ public sealed partial class MainWindow : Window
         _swapChainBinder.Clear();
 
         _player.Dispose();
+        _playbackMemory.Dispose();
         Log("window closed");
     }
 }
